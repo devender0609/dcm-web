@@ -1,0 +1,48 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg-gradient: radial-gradient(circle at top left, rgba(224, 247, 250, 0.4) 0, transparent 55%),
+                 radial-gradient(circle at top right, rgba(237, 231, 246, 0.4) 0, transparent 55%),
+                 radial-gradient(circle at bottom, rgba(255, 243, 224, 0.4) 0, transparent 60%);
+}
+
+/* Light background so the logo white blends in */
+body {
+  @apply text-slate-900;
+  background-color: #ffffff;
+  background-image: var(--bg-gradient);
+  background-attachment: fixed;
+  background-size: cover;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+}
+
+/* Main card */
+.glass {
+  @apply bg-white/95 border border-slate-200 rounded-3xl p-8 md:p-10 shadow-lg;
+}
+
+/* Gradient headline text */
+.gradient-text {
+  background: linear-gradient(120deg, #0f766e, #6366f1, #eab308);
+  -webkit-background-clip: text;
+  color: transparent;
+}
+
+/* Logo: no visible border, blended ink */
+.logo-wrap {
+  @apply inline-flex items-center justify-center;
+  background: transparent;
+}
+
+.logo-merged {
+  mix-blend-mode: multiply;
+  image-rendering: auto;
+}
+
+/* Small pill */
+.badge {
+  @apply inline-flex items-center rounded-full px-3 py-1 text-xs font-semibold 
+         bg-slate-100 border border-slate-200 uppercase tracking-wide;
+}
