@@ -937,8 +937,8 @@ export default function PrototypePage() {
                         const prob =
                           singleResult.combinedApproachProbs[key] * 100;
                         const isBest =
-                          singleResult.bestApproach === key &&
-                          singleResult.bestApproach !== "none";
+                          singleResult.bestApproach !== "none" &&
+			  singleResult.bestApproach === key;
                         const label =
                           key === "anterior"
                             ? "ANTERIOR"
