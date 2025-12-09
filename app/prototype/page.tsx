@@ -13,7 +13,7 @@ type ApproachChoice = ApproachKey | "none";
 type PatientInput = {
   age: number;
   sex: "M" | "F";
-  smoker: 0 | 1;
+  smoker: 0 | 1; // 0 = never / former, 1 = current
   symptomDurationMonths: number;
   severity: Severity;
   baselineMJOA: number;
@@ -82,6 +82,12 @@ function severityFromMJOA(mJOA: number): Severity {
   return "severe";
 }
 
+function parseNonNegativeFloat(raw: string): number {
+  const n = parseFloat(raw);
+  if (!Number.isFinite(n)) return NaN;
+  return n < 0 ? 0 : n;
+}
+
 // Very lightweight “rule + pseudo-ML” logic that mimics the Python engine
 // (not exact, but directionally similar for the demo).
 function computeSingleResult(input: PatientInput): SingleResult {
@@ -131,7 +137,7 @@ function computeSingleResult(input: PatientInput): SingleResult {
 
   if (input.symptomDurationMonths >= 24) riskScore += 10;
   if (input.t2Signal === "focal") riskScore += 5;
-  if (input.t2Signal === "multilevel") riskScore += 10;
+  if (input.t2Signal === "multlevel") riskScore += 10;
   if (input.canalRatio === ">60%") riskScore += 10;
   if (input.opll === 1) riskScore += 5;
   if (input.gaitImpairment === 1) riskScore += 5;
@@ -179,9 +185,9 @@ function computeSingleResult(input: PatientInput): SingleResult {
 
   const ruleSum = baseAnt + basePost + baseCirc;
   const ruleProbs: ApproachProbs = {
-    anterior: baseAnt / ruleSum,
-    posterior: basePost / ruleSum,
-    circumferential: baseCirc / ruleSum,
+    anterior: ruleSum > 0 ? baseAnt / ruleSum : 1 / 3,
+    posterior: ruleSum > 0 ? basePost / ruleSum : 1 / 3,
+    circumferential: ruleSum > 0 ? baseCirc / ruleSum : 1 / 3,
   };
 
   // Simple “ML” flavor: bias to posterior if multilevel, to anterior if short-segment.
@@ -201,9 +207,9 @@ function computeSingleResult(input: PatientInput): SingleResult {
 
   const mlSum = mlAnt + mlPost + mlCirc;
   const mlProbs: ApproachProbs = {
-    anterior: mlAnt / mlSum,
-    posterior: mlPost / mlSum,
-    circumferential: mlCirc / mlSum,
+    anterior: mlSum > 0 ? mlAnt / mlSum : 1 / 3,
+    posterior: mlSum > 0 ? mlPost / mlSum : 1 / 3,
+    circumferential: mlSum > 0 ? mlCirc / mlSum : 1 / 3,
   };
 
   const combined: ApproachProbs = {
@@ -290,21 +296,29 @@ function parseCsv(text: string): BatchRow[] {
       rec[h] = cols[idx];
     });
 
-    const baselineMJOA = parseFloat(rec["mJOA"] ?? rec["baseline_mJOA"]);
+    const baselineMJOA = parseNonNegativeFloat(
+      rec["mJOA"] ?? rec["baseline_mJOA"]
+    );
     const sev = severityFromMJOA(baselineMJOA);
 
     const row: BatchRow = {
       id: rec["id"] ?? rec["patient_id"] ?? i,
-      age: parseFloat(rec["age"]),
+      age: parseNonNegativeFloat(rec["age"]),
       sex: (rec["sex"] ?? "M") === "F" ? "F" : "M",
       smoker: rec["smoker"] === "1" || rec["smoker"] === "Yes" ? 1 : 0,
-      symptomDurationMonths: parseFloat(rec["symptom_duration_months"]),
+      symptomDurationMonths: parseNonNegativeFloat(
+        rec["symptom_duration_months"]
+      ),
       severity: sev,
       baselineMJOA,
-      levelsOperated: parseInt(
-        rec["levels_operated"] ?? rec["planned_levels"] ?? "1",
-        10
-      ),
+      levelsOperated: (() => {
+        const n = parseInt(
+          rec["levels_operated"] ?? rec["planned_levels"] ?? "1",
+          10
+        );
+        if (!Number.isFinite(n)) return NaN;
+        return n < 0 ? 0 : n;
+      })(),
       canalRatio:
         rec["canal_occupying_ratio_cat"] === "50-60%" ||
         rec["canal_occupying_ratio_cat"] === "50–60%"
@@ -331,9 +345,9 @@ function parseCsv(text: string): BatchRow[] {
         rec["psych_disorder"] === "1" || rec["psych_disorder"] === "Yes"
           ? 1
           : 0,
-      baselineNDI: parseFloat(rec["baseline_NDI"] ?? "0"),
-      sf36PCS: parseFloat(rec["baseline_SF36_PCS"] ?? "0"),
-      sf36MCS: parseFloat(rec["baseline_SF36_MCS"] ?? "0"),
+      baselineNDI: parseNonNegativeFloat(rec["baseline_NDI"] ?? "0"),
+      sf36PCS: parseNonNegativeFloat(rec["baseline_SF36_PCS"] ?? "0"),
+      sf36MCS: parseNonNegativeFloat(rec["baseline_SF36_MCS"] ?? "0"),
     };
 
     rows.push(row);
@@ -414,9 +428,20 @@ export default function PrototypePage() {
           case "levelsOperated":
           case "baselineNDI":
           case "sf36PCS":
-          case "sf36MCS":
-            (updated as any)[field] = value === "" ? NaN : parseFloat(value);
+          case "sf36MCS": {
+            if (value === "") {
+              (updated as any)[field] = NaN;
+            } else {
+              let num = parseFloat(value);
+              if (!Number.isFinite(num)) {
+                (updated as any)[field] = NaN;
+              } else {
+                if (num < 0) num = 0;
+                (updated as any)[field] = num;
+              }
+            }
             break;
+          }
           case "smoker":
           case "opll":
           case "t1Hypo":
@@ -632,6 +657,7 @@ export default function PrototypePage() {
                   </label>
                   <input
                     type="number"
+                    min={0}
                     className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm"
                     value={
                       Number.isNaN(singleInput.age) ? "" : singleInput.age
@@ -658,16 +684,20 @@ export default function PrototypePage() {
                 {/* Smoker */}
                 <div>
                   <label className="block text-xs font-medium text-slate-600">
-                    Smoker
+                    Current smoker
                   </label>
                   <select
                     className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm"
                     value={singleInput.smoker}
                     onChange={handleSingleChange("smoker")}
                   >
-                    <option value={0}>No</option>
-                    <option value={1}>Yes</option>
+                    <option value={0}>No (never / former)</option>
+                    <option value={1}>Yes (current)</option>
                   </select>
+                  <p className="mt-1 text-[10px] text-slate-500">
+                    For this prototype, “Yes” reflects current smoking; detailed
+                    pack-year history should still live in the EMR.
+                  </p>
                 </div>
 
                 {/* Symptom duration */}
@@ -677,6 +707,7 @@ export default function PrototypePage() {
                   </label>
                   <input
                     type="number"
+                    min={0}
                     className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm"
                     value={
                       Number.isNaN(singleInput.symptomDurationMonths)
@@ -695,6 +726,7 @@ export default function PrototypePage() {
                   <input
                     type="number"
                     step="0.5"
+                    min={0}
                     className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm"
                     value={
                       Number.isNaN(singleInput.baselineMJOA)
@@ -734,6 +766,7 @@ export default function PrototypePage() {
                   </label>
                   <input
                     type="number"
+                    min={0}
                     className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm"
                     value={
                       Number.isNaN(singleInput.levelsOperated)
@@ -842,6 +875,7 @@ export default function PrototypePage() {
                   </label>
                   <input
                     type="number"
+                    min={0}
                     className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm"
                     value={
                       Number.isNaN(singleInput.baselineNDI)
@@ -858,6 +892,7 @@ export default function PrototypePage() {
                   </label>
                   <input
                     type="number"
+                    min={0}
                     className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm"
                     value={
                       Number.isNaN(singleInput.sf36PCS)
@@ -874,6 +909,7 @@ export default function PrototypePage() {
                   </label>
                   <input
                     type="number"
+                    min={0}
                     className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm"
                     value={
                       Number.isNaN(singleInput.sf36MCS)
@@ -1053,8 +1089,7 @@ export default function PrototypePage() {
                     ).map((key) => {
                       const prob =
                         singleResult.combinedApproachProbs[key] * 100;
-                      const isBest =
-                        singleResult.bestApproach === key;
+                      const isBest = singleResult.bestApproach === key;
                       const label =
                         key === "anterior"
                           ? "ANTERIOR"
