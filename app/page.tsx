@@ -41,8 +41,7 @@ export default function HomePage() {
             </span>{" "}
             in degenerative cervical myelopathy (DCM). It integrates AO Spine /
             WFNS guideline concepts with synthetic outcome patterns derived from
-            published surgical cohorts and will later be calibrated on
-            prospectively collected Ascension Texas data.
+            published surgical cohorts.
           </p>
 
           <div className="mt-6 grid gap-5 md:grid-cols-2">

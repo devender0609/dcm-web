@@ -3,6 +3,7 @@
 import React, { useState, useMemo, ChangeEvent } from "react";
 import Link from "next/link";
 import Image from "next/image";
+import jsPDF from "jspdf";
 
 type Severity = "mild" | "moderate" | "severe";
 
@@ -75,6 +76,7 @@ function clamp(v: number, min: number, max: number): number {
 }
 
 function severityFromMJOA(mJOA: number): Severity {
+  if (!Number.isFinite(mJOA)) return "mild";
   if (mJOA >= 15) return "mild";
   if (mJOA >= 12) return "moderate";
   return "severe";
@@ -232,8 +234,9 @@ function computeSingleResult(input: PatientInput): SingleResult {
   const bestPair = vals[0];
   const secondPair = vals[1];
 
-  const bestApproach: ApproachChoice =
-    pSurgCombined < 0.5 ? "none" : (bestPair[0] as ApproachKey);
+  // Even if surgery is not recommended overall, still choose a “best” approach
+  // for the “if surgery is undertaken” discussion.
+  const bestApproach: ApproachChoice = bestPair[0];
 
   let uncertainty: "low" | "moderate" | "high" = "low";
   const gap = bestPair[1] - secondPair[1];
@@ -362,6 +365,25 @@ const initialSingleInput: PatientInput = {
   sf36MCS: 45,
 };
 
+const blankSingleInput: PatientInput = {
+  age: NaN,
+  sex: "M",
+  smoker: 0,
+  symptomDurationMonths: NaN,
+  severity: "mild",
+  baselineMJOA: NaN,
+  levelsOperated: NaN,
+  canalRatio: "<50%",
+  t2Signal: "none",
+  opll: 0,
+  t1Hypo: 0,
+  gaitImpairment: 0,
+  psychDisorder: 0,
+  baselineNDI: NaN,
+  sf36PCS: NaN,
+  sf36MCS: NaN,
+};
+
 export default function PrototypePage() {
   const [mode, setMode] = useState<"single" | "batch">("single");
   const [singleInput, setSingleInput] =
@@ -393,7 +415,7 @@ export default function PrototypePage() {
           case "baselineNDI":
           case "sf36PCS":
           case "sf36MCS":
-            (updated as any)[field] = parseFloat(value || "0");
+            (updated as any)[field] = value === "" ? NaN : parseFloat(value);
             break;
           case "smoker":
           case "opll":
@@ -430,6 +452,11 @@ export default function PrototypePage() {
     setSingleResult(result);
   };
 
+  const resetSingleInputs = () => {
+    setSingleInput(blankSingleInput);
+    setSingleResult(null);
+  };
+
   const handleBatchFile = async (e: ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -464,12 +491,63 @@ export default function PrototypePage() {
     }
   };
 
+  const handleBatchExportPdf = () => {
+    if (!batchResults.length) return;
+    const doc = new jsPDF();
+    doc.setFontSize(12);
+    doc.text("DCM Batch Results", 10, 10);
+
+    const headers = [
+      "ID",
+      "Age",
+      "mJOA",
+      "Severity",
+      "Dur (mo)",
+      "Levels",
+      "T2",
+      "Canal",
+      "P(surg)",
+      "P(MCID)",
+      "Best approach",
+      "Uncertainty",
+    ];
+    let y = 18;
+    doc.setFontSize(9);
+    doc.text(headers.join(" | "), 10, y);
+    y += 6;
+
+    batchResults.forEach((r) => {
+      if (y > 280) {
+        doc.addPage();
+        y = 10;
+      }
+      const row = [
+        String(r.id),
+        String(r.age),
+        r.baselineMJOA.toFixed(1),
+        r.severity,
+        String(r.symptomDurationMonths),
+        String(r.levelsOperated),
+        r.t2Signal,
+        r.canalRatio,
+        `${(r.pSurgCombined * 100).toFixed(0)}%`,
+        `${(r.pMcid * 100).toFixed(0)}%`,
+        r.bestApproach === "none" ? "-" : r.bestApproach,
+        r.uncertaintyLevel,
+      ].join(" | ");
+      doc.text(row, 10, y);
+      y += 6;
+    });
+
+    doc.save("dcm_batch_results.pdf");
+  };
+
   // -----------------------------
   // Render
   // -----------------------------
 
   return (
-    <div className="min-h-screen bg-slate-50">
+    <div className="min-h-screen bg-slate-50 text-[15px]">
       {/* HEADER – match main page style, white background, no blue bar */}
       <header className="border-b bg-white">
         <div className="mx-auto flex max-w-6xl items-center justify-between px-4 py-4 lg:px-8">
@@ -510,10 +588,6 @@ export default function PrototypePage() {
               Single-patient and batch views using guideline-informed logic
               blended with machine-learning style patterns.
             </p>
-          </div>
-
-          <div className="mt-3 inline-flex rounded-full bg-slate-100 px-4 py-1 text-xs font-medium text-slate-600">
-            Hybrid guideline + “ML-flavored” prototype • For discussion only
           </div>
         </div>
 
@@ -559,7 +633,9 @@ export default function PrototypePage() {
                   <input
                     type="number"
                     className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm"
-                    value={singleInput.age}
+                    value={
+                      Number.isNaN(singleInput.age) ? "" : singleInput.age
+                    }
                     onChange={handleSingleChange("age")}
                   />
                 </div>
@@ -602,7 +678,11 @@ export default function PrototypePage() {
                   <input
                     type="number"
                     className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm"
-                    value={singleInput.symptomDurationMonths}
+                    value={
+                      Number.isNaN(singleInput.symptomDurationMonths)
+                        ? ""
+                        : singleInput.symptomDurationMonths
+                    }
                     onChange={handleSingleChange("symptomDurationMonths")}
                   />
                 </div>
@@ -616,7 +696,11 @@ export default function PrototypePage() {
                     type="number"
                     step="0.5"
                     className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm"
-                    value={singleInput.baselineMJOA}
+                    value={
+                      Number.isNaN(singleInput.baselineMJOA)
+                        ? ""
+                        : singleInput.baselineMJOA
+                    }
                     onChange={handleSingleChange("baselineMJOA")}
                   />
                   <p className="mt-1 text-[10px] text-slate-500">
@@ -651,7 +735,11 @@ export default function PrototypePage() {
                   <input
                     type="number"
                     className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm"
-                    value={singleInput.levelsOperated}
+                    value={
+                      Number.isNaN(singleInput.levelsOperated)
+                        ? ""
+                        : singleInput.levelsOperated
+                    }
                     onChange={handleSingleChange("levelsOperated")}
                   />
                 </div>
@@ -733,7 +821,7 @@ export default function PrototypePage() {
                   </select>
                 </div>
 
-                {/* Smoker, psych, NDI, SF-36 */}
+                {/* Psych, NDI, SF-36 */}
                 <div>
                   <label className="block text-xs font-medium text-slate-600">
                     Psychiatric disorder
@@ -755,7 +843,11 @@ export default function PrototypePage() {
                   <input
                     type="number"
                     className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm"
-                    value={singleInput.baselineNDI}
+                    value={
+                      Number.isNaN(singleInput.baselineNDI)
+                        ? ""
+                        : singleInput.baselineNDI
+                    }
                     onChange={handleSingleChange("baselineNDI")}
                   />
                 </div>
@@ -767,7 +859,11 @@ export default function PrototypePage() {
                   <input
                     type="number"
                     className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm"
-                    value={singleInput.sf36PCS}
+                    value={
+                      Number.isNaN(singleInput.sf36PCS)
+                        ? ""
+                        : singleInput.sf36PCS
+                    }
                     onChange={handleSingleChange("sf36PCS")}
                   />
                 </div>
@@ -779,18 +875,28 @@ export default function PrototypePage() {
                   <input
                     type="number"
                     className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm"
-                    value={singleInput.sf36MCS}
+                    value={
+                      Number.isNaN(singleInput.sf36MCS)
+                        ? ""
+                        : singleInput.sf36MCS
+                    }
                     onChange={handleSingleChange("sf36MCS")}
                   />
                 </div>
               </div>
 
-              <div className="mt-6">
+              <div className="mt-6 flex gap-3">
                 <button
                   onClick={runSingleRecommendation}
                   className="inline-flex items-center rounded-full bg-emerald-600 px-6 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-emerald-700"
                 >
                   Run recommendation
+                </button>
+                <button
+                  onClick={resetSingleInputs}
+                  className="inline-flex items-center rounded-full border border-slate-300 px-5 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+                >
+                  Reset
                 </button>
               </div>
 
@@ -831,10 +937,18 @@ export default function PrototypePage() {
                       </p>
                       <p className="mt-2 text-xs text-slate-600">
                         Age {singleInput.age}, {singleInput.sex}, mJOA{" "}
-                        {singleInput.baselineMJOA.toFixed(1)} (
-                        {severityAuto}), symptom duration ≈{" "}
-                        {singleInput.symptomDurationMonths} months, planned
-                        levels {singleInput.levelsOperated}. Gait impairment:{" "}
+                        {Number.isNaN(singleInput.baselineMJOA)
+                          ? "—"
+                          : singleInput.baselineMJOA.toFixed(1)}{" "}
+                        ({severityAuto}), symptom duration ≈{" "}
+                        {Number.isNaN(singleInput.symptomDurationMonths)
+                          ? "—"
+                          : singleInput.symptomDurationMonths}{" "}
+                        months, planned levels{" "}
+                        {Number.isNaN(singleInput.levelsOperated)
+                          ? "—"
+                          : singleInput.levelsOperated}
+                        . Gait impairment:{" "}
                         {singleInput.gaitImpairment ? "Yes" : "No"}. OPLL:{" "}
                         {singleInput.opll ? "Yes" : "No"}. Canal compromise:{" "}
                         {singleInput.canalRatio}. T2 cord signal:{" "}
@@ -926,70 +1040,71 @@ export default function PrototypePage() {
                       each other
                     </span>{" "}
                     (low = one clear favorite, high = several similar options).
-                    Approach choice must also consider alignment, focal
+                    Even when the overall recommendation is non-operative, these
+                    estimates can support “if surgery is undertaken” discussions
+                    and must be interpreted alongside alignment, focal
                     pathology, and surgeon expertise.
                   </p>
 
                   {/* Three cards */}
                   <div className="mb-6 grid gap-4 md:grid-cols-3">
-                    {(["anterior", "posterior", "circumferential"] as ApproachKey[]).map(
-                      (key) => {
-                        const prob =
-                          singleResult.combinedApproachProbs[key] * 100;
-                        const isBest =
-                          singleResult.bestApproach !== "none" &&
-			  singleResult.bestApproach === key;
-                        const label =
-                          key === "anterior"
-                            ? "ANTERIOR"
-                            : key === "posterior"
-                            ? "POSTERIOR"
-                            : "CIRCUMFERENTIAL";
-                        const subtitle =
-                          key === "anterior"
-                            ? "Often preferred for focal / 1–2 level ventral disease."
-                            : key === "posterior"
-                            ? "Useful for multilevel dorsal compression or lordotic alignment."
-                            : "Reserved for extensive OPLL or marked ventral compromise requiring combined access.";
+                    {(
+                      ["anterior", "posterior", "circumferential"] as ApproachKey[]
+                    ).map((key) => {
+                      const prob =
+                        singleResult.combinedApproachProbs[key] * 100;
+                      const isBest =
+                        singleResult.bestApproach === key;
+                      const label =
+                        key === "anterior"
+                          ? "ANTERIOR"
+                          : key === "posterior"
+                          ? "POSTERIOR"
+                          : "CIRCUMFERENTIAL";
+                      const subtitle =
+                        key === "anterior"
+                          ? "Often preferred for focal / 1–2 level ventral disease."
+                          : key === "posterior"
+                          ? "Useful for multilevel dorsal compression or lordotic alignment."
+                          : "Reserved for extensive OPLL or marked ventral compromise requiring combined access.";
 
-                        return (
-                          <div
-                            key={key}
-                            className={`rounded-2xl border px-4 py-4 ${
-                              isBest
-                                ? "border-emerald-500 bg-emerald-50"
-                                : "border-slate-200 bg-slate-50"
-                            }`}
-                          >
-                            <div className="flex items-baseline justify-between">
-                              <p
-                                className={`text-xs font-semibold ${
-                                  isBest ? "text-emerald-800" : "text-slate-700"
-                                }`}
-                              >
-                                {label}
-                              </p>
-                              <p
-                                className={`text-xs font-semibold ${
-                                  isBest ? "text-emerald-800" : "text-slate-700"
-                                }`}
-                              >
-                                {prob.toFixed(1)}%
-                              </p>
-                            </div>
-                            <p className="mt-1 text-[11px] text-slate-600">
-                              {subtitle}
+                      return (
+                        <div
+                          key={key}
+                          className={`rounded-2xl border px-4 py-4 ${
+                            isBest
+                              ? "border-emerald-500 bg-emerald-50"
+                              : "border-slate-200 bg-slate-50"
+                          }`}
+                        >
+                          <div className="flex items-baseline justify-between">
+                            <p
+                              className={`text-xs font-semibold ${
+                                isBest ? "text-emerald-800" : "text-slate-700"
+                              }`}
+                            >
+                              {label}
                             </p>
-                            {isBest && (
-                              <p className="mt-2 text-[11px] font-semibold text-emerald-800">
-                                Highest estimated chance of clinically
-                                meaningful improvement.
-                              </p>
-                            )}
+                            <p
+                              className={`text-xs font-semibold ${
+                                isBest ? "text-emerald-800" : "text-slate-700"
+                              }`}
+                            >
+                              {prob.toFixed(1)}%
+                            </p>
                           </div>
-                        );
-                      }
-                    )}
+                          <p className="mt-1 text-[11px] text-slate-600">
+                            {subtitle}
+                          </p>
+                          {isBest && (
+                            <p className="mt-2 text-[11px] font-semibold text-emerald-800">
+                              Highest estimated chance of clinically meaningful
+                              improvement if surgery is performed.
+                            </p>
+                          )}
+                        </div>
+                      );
+                    })}
                   </div>
 
                   {/* Horizontal bar chart */}
@@ -1081,64 +1196,78 @@ export default function PrototypePage() {
             )}
 
             {batchResults.length > 0 && (
-              <div className="mt-4 overflow-x-auto rounded-2xl border border-slate-200">
-                <table className="min-w-full text-xs">
-                  <thead className="bg-slate-50 text-[11px] uppercase tracking-wide text-slate-600">
-                    <tr>
-                      <th className="px-3 py-2 text-left">ID</th>
-                      <th className="px-3 py-2 text-left">Age</th>
-                      <th className="px-3 py-2 text-left">mJOA</th>
-                      <th className="px-3 py-2 text-left">Severity</th>
-                      <th className="px-3 py-2 text-left">Dur (mo)</th>
-                      <th className="px-3 py-2 text-left">Levels</th>
-                      <th className="px-3 py-2 text-left">T2</th>
-                      <th className="px-3 py-2 text-left">Canal</th>
-                      <th className="px-3 py-2 text-left">
-                        P(surgery) comb.
-                      </th>
-                      <th className="px-3 py-2 text-left">
-                        P(MCID) (approx)
-                      </th>
-                      <th className="px-3 py-2 text-left">Best approach</th>
-                      <th className="px-3 py-2 text-left">Uncertainty</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100">
-                    {batchResults.map((r) => (
-                      <tr key={r.id}>
-                        <td className="px-3 py-1.5">{r.id}</td>
-                        <td className="px-3 py-1.5">{r.age}</td>
-                        <td className="px-3 py-1.5">
-                          {r.baselineMJOA.toFixed(1)}
-                        </td>
-                        <td className="px-3 py-1.5 capitalize">
-                          {r.severity}
-                        </td>
-                        <td className="px-3 py-1.5">
-                          {r.symptomDurationMonths}
-                        </td>
-                        <td className="px-3 py-1.5">{r.levelsOperated}</td>
-                        <td className="px-3 py-1.5">{r.t2Signal}</td>
-                        <td className="px-3 py-1.5">{r.canalRatio}</td>
-                        <td className="px-3 py-1.5">
-                          {(r.pSurgCombined * 100).toFixed(0)}%
-                        </td>
-                        <td className="px-3 py-1.5">
-                          {(r.pMcid * 100).toFixed(0)}%
-                        </td>
-                        <td className="px-3 py-1.5 capitalize">
-                          {r.bestApproach === "none"
-                            ? "—"
-                            : r.bestApproach ?? "—"}
-                        </td>
-                        <td className="px-3 py-1.5 capitalize">
-                          {r.uncertaintyLevel}
-                        </td>
+              <>
+                <div className="mb-3 flex items-center justify-between">
+                  <p className="text-sm text-slate-700">
+                    {batchResults.length} patients processed.
+                  </p>
+                  <button
+                    onClick={handleBatchExportPdf}
+                    className="inline-flex items-center rounded-full bg-slate-800 px-5 py-2 text-xs font-semibold text-white shadow-sm hover:bg-slate-900"
+                  >
+                    Export results as PDF
+                  </button>
+                </div>
+
+                <div className="mt-2 overflow-x-auto rounded-2xl border border-slate-200">
+                  <table className="min-w-full text-xs">
+                    <thead className="bg-slate-50 text-[11px] uppercase tracking-wide text-slate-600">
+                      <tr>
+                        <th className="px-3 py-2 text-left">ID</th>
+                        <th className="px-3 py-2 text-left">Age</th>
+                        <th className="px-3 py-2 text-left">mJOA</th>
+                        <th className="px-3 py-2 text-left">Severity</th>
+                        <th className="px-3 py-2 text-left">Dur (mo)</th>
+                        <th className="px-3 py-2 text-left">Levels</th>
+                        <th className="px-3 py-2 text-left">T2</th>
+                        <th className="px-3 py-2 text-left">Canal</th>
+                        <th className="px-3 py-2 text-left">
+                          P(surgery) comb.
+                        </th>
+                        <th className="px-3 py-2 text-left">
+                          P(MCID) (approx)
+                        </th>
+                        <th className="px-3 py-2 text-left">Best approach</th>
+                        <th className="px-3 py-2 text-left">Uncertainty</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {batchResults.map((r) => (
+                        <tr key={r.id}>
+                          <td className="px-3 py-1.5">{r.id}</td>
+                          <td className="px-3 py-1.5">{r.age}</td>
+                          <td className="px-3 py-1.5">
+                            {r.baselineMJOA.toFixed(1)}
+                          </td>
+                          <td className="px-3 py-1.5 capitalize">
+                            {r.severity}
+                          </td>
+                          <td className="px-3 py-1.5">
+                            {r.symptomDurationMonths}
+                          </td>
+                          <td className="px-3 py-1.5">{r.levelsOperated}</td>
+                          <td className="px-3 py-1.5">{r.t2Signal}</td>
+                          <td className="px-3 py-1.5">{r.canalRatio}</td>
+                          <td className="px-3 py-1.5">
+                            {(r.pSurgCombined * 100).toFixed(0)}%
+                          </td>
+                          <td className="px-3 py-1.5">
+                            {(r.pMcid * 100).toFixed(0)}%
+                          </td>
+                          <td className="px-3 py-1.5 capitalize">
+                            {r.bestApproach === "none"
+                              ? "—"
+                              : r.bestApproach ?? "—"}
+                          </td>
+                          <td className="px-3 py-1.5 capitalize">
+                            {r.uncertaintyLevel}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </>
             )}
           </section>
         )}
