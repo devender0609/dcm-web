@@ -137,10 +137,11 @@ function computeSingleResult(input: PatientInput): SingleResult {
 
   if (input.symptomDurationMonths >= 24) riskScore += 10;
   if (input.t2Signal === "focal") riskScore += 5;
-  if (input.t2Signal === "multlevel") riskScore += 10;
+  if (input.t2Signal === "multilevel") riskScore += 10;  // ← fixed here
   if (input.canalRatio === ">60%") riskScore += 10;
   if (input.opll === 1) riskScore += 5;
   if (input.gaitImpairment === 1) riskScore += 5;
+
 
   riskScore = clamp(riskScore, 0, 100);
 
