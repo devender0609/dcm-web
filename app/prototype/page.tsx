@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState } from "react";
+import jsPDF from "jspdf";
 
 // ---- Types that mirror the form ----
 type Sex = "M" | "F";
@@ -228,6 +229,51 @@ function computeLocalRecommendation(input: Required<InputState>): SingleResult {
   };
 }
 
+// ---- Simple CSV utilities for batch tab ----
+function parseCsvToObjects(csv: string): any[] {
+  const lines = csv
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0);
+  if (lines.length < 2) return [];
+
+  const headers = lines[0].split(",").map((h) => h.trim());
+  const rows: any[] = [];
+
+  for (let i = 1; i < lines.length; i++) {
+    const row = lines[i].split(",");
+    if (row.length === 1 && row[0] === "") continue;
+    const obj: any = {};
+    headers.forEach((h, idx) => {
+      obj[h] = (row[idx] ?? "").trim();
+    });
+    rows.push(obj);
+  }
+  return rows;
+}
+
+function mapCsvRowToInput(row: any): InputState {
+  const input: InputState = {
+    age: row.age ?? "",
+    sex: (row.sex as Sex) || "",
+    smoker: row.smoker === "1" ? "1" : "0",
+    symptomDurationMonths: row.symptom_duration_months ?? "",
+    severity: "",
+    baselineMJOA: row.baseline_mJOA ?? "",
+    levelsOperated: row.levels_operated ?? "",
+    canalRatio: (row.canal_occupying_ratio_cat as CanalRatioCat) || "",
+    t2Signal: (row.T2_signal as T2Signal) || "",
+    opll: row.OPLL === "1" ? "1" : "0",
+    t1Hypo: row.T1_hypointensity === "1" ? "1" : "0",
+    gaitImpairment: row.gait_impairment === "1" ? "1" : "0",
+    psychDisorder: row.psych_disorder === "1" ? "1" : "0",
+    baselineNDI: row.baseline_NDI ?? "",
+    sf36PCS: row.baseline_SF36_PCS ?? "",
+    sf36MCS: row.baseline_SF36_MCS ?? "",
+  };
+  return input;
+}
+
 // ---------------
 // React component
 // ---------------
@@ -237,6 +283,14 @@ export default function PrototypePage() {
   const [result, setResult] = useState<SingleResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Batch state
+  const [batchCsv, setBatchCsv] = useState("");
+  const [batchResults, setBatchResults] = useState<
+    { input: InputState; result: SingleResult }[] | null
+  >(null);
+  const [batchError, setBatchError] = useState<string | null>(null);
+  const [batchLoading, setBatchLoading] = useState(false);
 
   // helper to update fields
   function updateField<K extends keyof InputState>(key: K, value: InputState[K]) {
@@ -389,6 +443,221 @@ export default function PrototypePage() {
     }
   }
 
+  // Batch handler (local TS logic for now)
+  async function handleRunBatch() {
+    setBatchError(null);
+    setBatchResults(null);
+
+    if (!batchCsv.trim()) {
+      setBatchError("Paste a CSV with a header row and at least one patient.");
+      return;
+    }
+
+    const rows = parseCsvToObjects(batchCsv);
+    if (!rows.length) {
+      setBatchError("Could not parse any rows. Check CSV format and headers.");
+      return;
+    }
+
+    const results: { input: InputState; result: SingleResult }[] = [];
+    setBatchLoading(true);
+
+    try {
+      for (let idx = 0; idx < rows.length; idx++) {
+        const row = rows[idx];
+        const input = mapCsvRowToInput(row);
+
+        const requiredNumeric: (keyof InputState)[] = [
+          "age",
+          "symptomDurationMonths",
+          "baselineMJOA",
+          "levelsOperated",
+          "baselineNDI",
+          "sf36PCS",
+          "sf36MCS",
+        ];
+
+        for (const k of requiredNumeric) {
+          const v = input[k];
+          const num = Number(v as string);
+          if (v === "" || Number.isNaN(num) || num < 0) {
+            throw new Error(
+              `Row ${idx + 2}: numeric field "${String(
+                k
+              )}" is missing or invalid (must be non-negative).`
+            );
+          }
+        }
+
+        if (!input.sex || !input.canalRatio || !input.t2Signal) {
+          throw new Error(
+            `Row ${idx + 2}: sex, canal_occupying_ratio_cat, and T2_signal are required.`
+          );
+        }
+
+        const mjoaNum = Number(input.baselineMJOA);
+        const derivedSeverity = deriveSeverity(mjoaNum);
+
+        const localInputs: Required<InputState> = {
+          ...input,
+          age: input.age || "0",
+          symptomDurationMonths: input.symptomDurationMonths || "0",
+          baselineMJOA: input.baselineMJOA || "0",
+          levelsOperated: input.levelsOperated || "0",
+          baselineNDI: input.baselineNDI || "0",
+          sf36PCS: input.sf36PCS || "0",
+          sf36MCS: input.sf36MCS || "0",
+          sex: input.sex || "M",
+          severity: derivedSeverity,
+          canalRatio: (input.canalRatio || "50–60%") as CanalRatioCat,
+          t2Signal: (input.t2Signal || "none") as T2Signal,
+        };
+
+        const res = computeLocalRecommendation(localInputs);
+        results.push({ input, result: res });
+      }
+
+      setBatchResults(results);
+    } catch (e: any) {
+      console.error(e);
+      setBatchError(e.message ?? "Failed to process batch CSV.");
+    } finally {
+      setBatchLoading(false);
+    }
+  }
+
+  // PDF helpers
+  function handleExportSinglePdf() {
+    if (!result) {
+      setError("Run a single-patient recommendation before exporting a PDF.");
+      return;
+    }
+
+    const doc = new jsPDF();
+    const mjoaNum = Number(inputs.baselineMJOA);
+    const sev = Number.isNaN(mjoaNum) ? "-" : deriveSeverity(mjoaNum);
+
+    doc.setFontSize(14);
+    doc.text("DCM Surgical Decision Support – Single Patient Summary", 10, 15);
+
+    doc.setFontSize(10);
+    doc.text(
+      `Age: ${inputs.age || "NA"}   Sex: ${inputs.sex || "NA"}   Smoker: ${
+        inputs.smoker === "1" ? "Current" : "Non-smoker / former"
+      }`,
+      10,
+      25
+    );
+    doc.text(
+      `mJOA: ${inputs.baselineMJOA || "NA"}   mJOA-based severity: ${sev}`,
+      10,
+      31
+    );
+    doc.text(
+      `Duration (months): ${inputs.symptomDurationMonths || "NA"}   Planned levels: ${
+        inputs.levelsOperated || "NA"
+      }`,
+      10,
+      37
+    );
+    doc.text(
+      `Canal ratio: ${inputs.canalRatio || "NA"}   T2 signal: ${
+        inputs.t2Signal || "NA"
+      }   OPLL: ${inputs.opll === "1" ? "Yes" : "No"}`,
+      10,
+      43
+    );
+
+    doc.setFontSize(12);
+    doc.text(`Recommendation: ${result.recommendationLabel}`, 10, 53);
+
+    doc.setFontSize(10);
+    doc.text(
+      `Risk without surgery: ${result.riskScore.toFixed(
+        0
+      )}% – ${result.riskText}`,
+      10,
+      61
+    );
+    doc.text(
+      `Expected chance of meaningful improvement with surgery: ${result.benefitScore.toFixed(
+        0
+      )}% – ${result.benefitText}`,
+      10,
+      69
+    );
+
+    const ap = result.approachProbs;
+    doc.text(
+      `P(MCID) by approach – Anterior: ${Math.round(
+        ap.anterior * 100
+      )}%, Posterior: ${Math.round(ap.posterior * 100)}%, Circumferential: ${Math.round(
+        ap.circumferential * 100
+      )}% (best: ${result.bestApproach})`,
+      10,
+      79
+    );
+
+    doc.save("dcm_single_summary.pdf");
+  }
+
+  function handleExportBatchPdf() {
+    if (!batchResults || batchResults.length === 0) {
+      setBatchError("Run a batch recommendation before exporting a PDF.");
+      return;
+    }
+
+    const doc = new jsPDF();
+    doc.setFontSize(14);
+    doc.text("DCM Surgical Decision Support – Batch Summary", 10, 15);
+
+    const total = batchResults.length;
+    const nSurg = batchResults.filter((r) => r.result.surgeryRecommended).length;
+    const nNonSurg = total - nSurg;
+
+    const approachCounts: Record<ApproachKey, number> = {
+      anterior: 0,
+      posterior: 0,
+      circumferential: 0,
+    };
+    batchResults.forEach((r) => {
+      if (r.result.bestApproach !== "none") {
+        approachCounts[r.result.bestApproach as ApproachKey]++;
+      }
+    });
+
+    doc.setFontSize(10);
+    doc.text(`Total patients: ${total}`, 10, 25);
+    doc.text(`Surgery recommended: ${nSurg}`, 10, 31);
+    doc.text(`Non-operative trial reasonable / consider: ${nNonSurg}`, 10, 37);
+    doc.text(
+      `Best approach – Anterior: ${approachCounts.anterior}, Posterior: ${approachCounts.posterior}, Circumferential: ${approachCounts.circumferential}`,
+      10,
+      43
+    );
+
+    let y = 55;
+    doc.setFontSize(9);
+    doc.text("Per-patient snapshot (index, age, mJOA, recommendation, best approach)", 10, y);
+    y += 6;
+
+    batchResults.forEach((row, idx) => {
+      const line = `${idx + 1}) Age ${row.input.age || "NA"}, mJOA ${
+        row.input.baselineMJOA || "NA"
+      }, rec: ${row.result.recommendationLabel}, best: ${
+        row.result.bestApproach
+      }`;
+      doc.text(line, 10, y);
+      y += 5;
+      if (y > 280) {
+        doc.addPage();
+        y = 15;
+      }
+    });
+
+    doc.save("dcm_batch_summary.pdf");
+  }
+
   // helpers for rendering
   function formatPct(p: number): string {
     return `${Math.round(clamp01(p) * 100)}%`;
@@ -410,7 +679,7 @@ export default function PrototypePage() {
             />
           </div>
           <div className="text-right">
-            <div className="text-lg font-semibold">
+            <div className="text-xl font-semibold">
               Ascension Texas Spine and Scoliosis
             </div>
             <div className="text-xs text-slate-500">
@@ -454,14 +723,16 @@ export default function PrototypePage() {
             <div className="grid gap-6 md:grid-cols-[minmax(0,2fr)_minmax(0,1.4fr)]">
               {/* Left: inputs */}
               <section className="rounded-2xl bg-white p-6 shadow-sm">
-                <h2 className="mb-4 text-lg font-semibold text-slate-900">
+                <h2 className="mb-4 text-xl font-semibold text-slate-900">
                   1. Patient inputs
                 </h2>
 
                 <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3 text-sm">
                   {/* Age */}
                   <div>
-                    <label className="mb-1 block font-medium">Age (years)</label>
+                    <label className="mb-1 block text-sm font-semibold text-slate-800">
+                      Age (years)
+                    </label>
                     <input
                       type="number"
                       min={0}
@@ -473,7 +744,9 @@ export default function PrototypePage() {
 
                   {/* Sex */}
                   <div>
-                    <label className="mb-1 block font-medium">Sex</label>
+                    <label className="mb-1 block text-sm font-semibold text-slate-800">
+                      Sex
+                    </label>
                     <select
                       className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
                       value={inputs.sex}
@@ -487,7 +760,9 @@ export default function PrototypePage() {
 
                   {/* Smoker */}
                   <div>
-                    <label className="mb-1 block font-medium">Smoking status</label>
+                    <label className="mb-1 block text-sm font-semibold text-slate-800">
+                      Smoking status
+                    </label>
                     <select
                       className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
                       value={inputs.smoker}
@@ -500,7 +775,7 @@ export default function PrototypePage() {
 
                   {/* Symptom duration */}
                   <div>
-                    <label className="mb-1 block font-medium">
+                    <label className="mb-1 block text-sm font-semibold text-slate-800">
                       Symptom duration (months)
                     </label>
                     <input
@@ -516,7 +791,9 @@ export default function PrototypePage() {
 
                   {/* mJOA */}
                   <div>
-                    <label className="mb-1 block font-medium">mJOA</label>
+                    <label className="mb-1 block text-sm font-semibold text-slate-800">
+                      mJOA
+                    </label>
                     <input
                       type="number"
                       min={0}
@@ -529,7 +806,7 @@ export default function PrototypePage() {
 
                   {/* mJOA-derived severity (auto, read-only) */}
                   <div>
-                    <label className="mb-1 block font-medium">
+                    <label className="mb-1 block text-sm font-semibold text-slate-800">
                       mJOA-based severity (auto)
                     </label>
                     <div className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-800">
@@ -542,7 +819,9 @@ export default function PrototypePage() {
 
                   {/* Canal ratio */}
                   <div>
-                    <label className="mb-1 block font-medium">Canal occupying ratio</label>
+                    <label className="mb-1 block text-sm font-semibold text-slate-800">
+                      Canal occupying ratio
+                    </label>
                     <select
                       className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
                       value={inputs.canalRatio}
@@ -559,7 +838,9 @@ export default function PrototypePage() {
 
                   {/* T2 signal */}
                   <div>
-                    <label className="mb-1 block font-medium">T2 cord signal</label>
+                    <label className="mb-1 block text-sm font-semibold text-slate-800">
+                      T2 cord signal
+                    </label>
                     <select
                       className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
                       value={inputs.t2Signal}
@@ -576,7 +857,7 @@ export default function PrototypePage() {
 
                   {/* Levels operated */}
                   <div>
-                    <label className="mb-1 block font-medium">
+                    <label className="mb-1 block text-sm font-semibold text-slate-800">
                       Planned operated levels
                     </label>
                     <input
@@ -591,7 +872,9 @@ export default function PrototypePage() {
 
                   {/* OPLL */}
                   <div>
-                    <label className="mb-1 block font-medium">OPLL present</label>
+                    <label className="mb-1 block text-sm font-semibold text-slate-800">
+                      OPLL present
+                    </label>
                     <select
                       className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
                       value={inputs.opll}
@@ -604,7 +887,9 @@ export default function PrototypePage() {
 
                   {/* T1 hypo */}
                   <div>
-                    <label className="mb-1 block font-medium">T1 hypointensity</label>
+                    <label className="mb-1 block text-sm font-semibold text-slate-800">
+                      T1 hypointensity
+                    </label>
                     <select
                       className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
                       value={inputs.t1Hypo}
@@ -619,7 +904,9 @@ export default function PrototypePage() {
 
                   {/* Gait impairment */}
                   <div>
-                    <label className="mb-1 block font-medium">Gait impairment</label>
+                    <label className="mb-1 block text-sm font-semibold text-slate-800">
+                      Gait impairment
+                    </label>
                     <select
                       className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
                       value={inputs.gaitImpairment}
@@ -634,7 +921,9 @@ export default function PrototypePage() {
 
                   {/* Psych disorder */}
                   <div>
-                    <label className="mb-1 block font-medium">Psychiatric disorder</label>
+                    <label className="mb-1 block text-sm font-semibold text-slate-800">
+                      Psychiatric disorder
+                    </label>
                     <select
                       className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
                       value={inputs.psychDisorder}
@@ -649,7 +938,9 @@ export default function PrototypePage() {
 
                   {/* NDI */}
                   <div>
-                    <label className="mb-1 block font-medium">Baseline NDI</label>
+                    <label className="mb-1 block text-sm font-semibold text-slate-800">
+                      Baseline NDI
+                    </label>
                     <input
                       type="number"
                       min={0}
@@ -661,7 +952,9 @@ export default function PrototypePage() {
 
                   {/* SF-36 PCS */}
                   <div>
-                    <label className="mb-1 block font-medium">SF-36 PCS</label>
+                    <label className="mb-1 block text-sm font-semibold text-slate-800">
+                      SF-36 PCS
+                    </label>
                     <input
                       type="number"
                       min={0}
@@ -673,7 +966,9 @@ export default function PrototypePage() {
 
                   {/* SF-36 MCS */}
                   <div>
-                    <label className="mb-1 block font-medium">SF-36 MCS</label>
+                    <label className="mb-1 block text-sm font-semibold text-slate-800">
+                      SF-36 MCS
+                    </label>
                     <input
                       type="number"
                       min={0}
@@ -701,11 +996,14 @@ export default function PrototypePage() {
                   >
                     Reset
                   </button>
-                  {error && (
-                    <div className="text-sm text-red-600">
-                      {error}
-                    </div>
-                  )}
+                  <button
+                    type="button"
+                    onClick={handleExportSinglePdf}
+                    className="rounded-full border border-slate-200 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
+                  >
+                    Save summary (PDF)
+                  </button>
+                  {error && <div className="text-sm text-red-600">{error}</div>}
                 </div>
               </section>
 
@@ -747,7 +1045,7 @@ export default function PrototypePage() {
               <div className="space-y-6">
                 {/* Surgery decision */}
                 <section className="rounded-2xl bg-white p-6 shadow-sm">
-                  <h2 className="mb-3 text-lg font-semibold text-slate-900">
+                  <h2 className="mb-3 text-xl font-semibold text-slate-900">
                     1. Should this patient undergo surgery?
                   </h2>
                   <div className="mb-2 text-sm">
@@ -764,7 +1062,9 @@ export default function PrototypePage() {
                   </div>
                   <div className="grid gap-4 md:grid-cols-2 text-sm">
                     <div>
-                      <div className="mb-1 font-medium">Risk without surgery</div>
+                      <div className="mb-1 font-medium text-slate-900">
+                        Risk without surgery
+                      </div>
                       <div className="mb-1 text-slate-700">{result.riskText}</div>
                       <div className="mt-2 h-3 w-full rounded-full bg-rose-100">
                         <div
@@ -778,7 +1078,7 @@ export default function PrototypePage() {
                       </div>
                     </div>
                     <div>
-                      <div className="mb-1 font-medium">
+                      <div className="mb-1 font-medium text-slate-900">
                         Expected chance of meaningful improvement with surgery
                       </div>
                       <div className="mb-1 text-slate-700">{result.benefitText}</div>
@@ -799,12 +1099,15 @@ export default function PrototypePage() {
                 {/* Approach choice */}
                 <section className="rounded-2xl bg-white p-6 shadow-sm">
                   <div className="mb-3 flex items-center justify-between">
-                    <h2 className="text-lg font-semibold text-slate-900">
+                    <h2 className="text-xl font-semibold text-slate-900">
                       2. If surgery is offered, which approach?
                     </h2>
-                    <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-600">
+                    <span className="rounded-full bg-slate-100 px-3 py-1 text-[11px] font-medium text-slate-600">
                       Uncertainty:{" "}
-                      <span className="capitalize">{result.uncertainty}</span>
+                      <span className="capitalize">{result.uncertainty}</span>{" "}
+                      <span className="text-[10px] text-slate-500">
+                        (low = one clear favorite; high = several similar options)
+                      </span>
                     </span>
                   </div>
 
@@ -889,7 +1192,9 @@ export default function PrototypePage() {
 
             {/* Bottom info card */}
             <section className="rounded-2xl bg-white p-5 text-xs text-slate-600 shadow-sm">
-              <div className="mb-1 font-semibold">Hybrid guideline + ML engine</div>
+              <div className="mb-1 text-sm font-semibold text-slate-900">
+                Hybrid guideline + ML engine
+              </div>
               <p>
                 This prototype blends AO Spine / WFNS guideline concepts (myelopathy
                 severity, cord signal, canal compromise, OPLL, gait) with patterns learned
@@ -899,16 +1204,106 @@ export default function PrototypePage() {
             </section>
           </>
         ) : (
-          // --------- Batch tab placeholder ----------
+          // --------- Batch tab ----------
           <section className="rounded-2xl bg-white p-6 text-sm shadow-sm">
-            <h2 className="mb-3 text-lg font-semibold text-slate-900">
-              Batch (CSV) – coming next
-            </h2>
-            <p className="text-slate-700">
-              This tab will allow you to upload a CSV of patients and export aggregated
-              recommendations. For now, please use the single-patient view while we finish
-              wiring the batch logic to the same frozen model.
+            <h2 className="mb-3 text-xl font-semibold text-slate-900">Batch (CSV)</h2>
+            <p className="mb-3 text-slate-700">
+              Paste a CSV with one row per patient using this header (order can match
+              your export):
             </p>
+            <p className="mb-3 rounded-lg bg-slate-50 px-3 py-2 text-[11px] font-mono text-slate-700">
+              age,sex,smoker,symptom_duration_months,severity,baseline_mJOA,levels_operated,canal_occupying_ratio_cat,T2_signal,OPLL,T1_hypointensity,gait_impairment,psych_disorder,baseline_NDI,baseline_SF36_PCS,baseline_SF36_MCS
+            </p>
+            <textarea
+              rows={10}
+              className="w-full rounded-lg border border-slate-200 px-3 py-2 font-mono text-xs text-slate-800"
+              placeholder="age,sex,smoker,symptom_duration_months,severity,baseline_mJOA,levels_operated,canal_occupying_ratio_cat,T2_signal,OPLL,T1_hypointensity,gait_impairment,psych_disorder,baseline_NDI,baseline_SF36_PCS,baseline_SF36_MCS
+65,M,0,12,moderate,13,3,50–60%,multilevel,0,0,1,0,40,40,45"
+              value={batchCsv}
+              onChange={(e) => setBatchCsv(e.target.value)}
+            />
+            <div className="mt-4 flex flex-wrap items-center gap-3">
+              <button
+                type="button"
+                onClick={handleRunBatch}
+                disabled={batchLoading}
+                className="rounded-full bg-emerald-600 px-5 py-2 text-sm font-semibold text-white shadow-sm hover:bg-emerald-700 disabled:opacity-60"
+              >
+                {batchLoading ? "Running..." : "Run batch recommendations"}
+              </button>
+              <button
+                type="button"
+                onClick={handleExportBatchPdf}
+                className="rounded-full border border-slate-200 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
+              >
+                Save batch summary (PDF)
+              </button>
+              {batchError && <div className="text-sm text-red-600">{batchError}</div>}
+            </div>
+
+            {batchResults && (
+              <>
+                <div className="mt-6 text-sm text-slate-800">
+                  <div className="font-semibold">
+                    Summary for {batchResults.length} patients
+                  </div>
+                  <div className="mt-1 text-xs text-slate-600">
+                    Surgery recommended in{" "}
+                    {
+                      batchResults.filter((r) => r.result.surgeryRecommended)
+                        .length
+                    }{" "}
+                    patients; non-operative trial or consider surgery in the remainder.
+                  </div>
+                </div>
+
+                <div className="mt-4 overflow-x-auto">
+                  <table className="min-w-full border-t border-slate-200 text-xs">
+                    <thead className="bg-slate-50 text-[11px] uppercase tracking-wide text-slate-500">
+                      <tr>
+                        <th className="px-2 py-1 text-left">#</th>
+                        <th className="px-2 py-1 text-left">Age</th>
+                        <th className="px-2 py-1 text-left">Sex</th>
+                        <th className="px-2 py-1 text-left">mJOA</th>
+                        <th className="px-2 py-1 text-left">Severity</th>
+                        <th className="px-2 py-1 text-left">T2</th>
+                        <th className="px-2 py-1 text-left">Canal</th>
+                        <th className="px-2 py-1 text-left">Rec</th>
+                        <th className="px-2 py-1 text-left">Best approach</th>
+                        <th className="px-2 py-1 text-left">Uncertainty</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {batchResults.map(({ input, result }, idx) => {
+                        const m = Number(input.baselineMJOA);
+                        const sev = Number.isNaN(m) ? "-" : deriveSeverity(m);
+                        return (
+                          <tr
+                            key={idx}
+                            className={idx % 2 === 0 ? "bg-white" : "bg-slate-50/60"}
+                          >
+                            <td className="px-2 py-1">{idx + 1}</td>
+                            <td className="px-2 py-1">{input.age}</td>
+                            <td className="px-2 py-1">{input.sex}</td>
+                            <td className="px-2 py-1">{input.baselineMJOA}</td>
+                            <td className="px-2 py-1 capitalize">{sev}</td>
+                            <td className="px-2 py-1">{input.t2Signal}</td>
+                            <td className="px-2 py-1">{input.canalRatio}</td>
+                            <td className="px-2 py-1">{result.recommendationLabel}</td>
+                            <td className="px-2 py-1 capitalize">
+                              {result.bestApproach}
+                            </td>
+                            <td className="px-2 py-1 capitalize">
+                              {result.uncertainty}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </>
+            )}
           </section>
         )}
       </main>
