@@ -13,7 +13,7 @@ type InputState = {
   sex: Sex | "";
   smoker: "0" | "1"; // 0 = non / former, 1 = current
   symptomDurationMonths: string;
-  severity: Severity | "";
+  severity: Severity | ""; // kept in type, but logic always derives from mJOA
   baselineMJOA: string;
   levelsOperated: string;
   canalRatio: CanalRatioCat | "";
@@ -69,6 +69,13 @@ const initialInputs: InputState = {
   sf36MCS: "45",
 };
 
+// helper: derive severity strictly from mJOA
+function deriveSeverity(mJOA: number): Severity {
+  if (mJOA >= 15) return "mild";
+  if (mJOA >= 12) return "moderate";
+  return "severe";
+}
+
 // -----------------
 // Local rule engine
 // -----------------
@@ -84,13 +91,8 @@ function computeLocalRecommendation(input: Required<InputState>): SingleResult {
   const levels = Number(input.levelsOperated);
   const ndi = Number(input.baselineNDI);
 
-  // ---- 1) severity from mJOA if not chosen ----
-  let severity: Severity = input.severity || "moderate";
-  if (!input.severity) {
-    if (mJOA >= 15) severity = "mild";
-    else if (mJOA >= 12) severity = "moderate";
-    else severity = "severe";
-  }
+  // ---- 1) severity derived from mJOA only ----
+  const severity: Severity = deriveSeverity(mJOA);
 
   // ---- 2) simple risk/benefit scores on 0–100 ----
   let baseRisk = 10;
@@ -241,7 +243,7 @@ export default function PrototypePage() {
     setInputs((prev) => ({ ...prev, [key]: value }));
   }
 
-  // reset back to blank (per your request)
+  // reset back to blank
   function handleReset() {
     setInputs({
       age: "",
@@ -297,18 +299,21 @@ export default function PrototypePage() {
       return;
     }
 
+    const mjoaNum = Number(inputs.baselineMJOA);
+    const derivedSeverity = deriveSeverity(mjoaNum);
+
     setLoading(true);
     try {
       const apiBase = process.env.NEXT_PUBLIC_DCM_API_URL;
 
       if (apiBase) {
-        // ---------- API path (for future deployment of FastAPI) ----------
+        // ---------- API path ----------
         const payload = {
           age: Number(inputs.age),
           sex: inputs.sex,
           smoker: Number(inputs.smoker),
           symptom_duration_months: Number(inputs.symptomDurationMonths),
-          severity: inputs.severity || "moderate",
+          severity: derivedSeverity, // always derived from mJOA
           baseline_mJOA: Number(inputs.baselineMJOA),
           levels_operated: Number(inputs.levelsOperated),
           OPLL: Number(inputs.opll),
@@ -335,7 +340,6 @@ export default function PrototypePage() {
 
         const data = await resp.json();
 
-        // minimal mapping – assumes your FastAPI returns fields similar
         const mapped: SingleResult = {
           surgeryRecommended: Boolean(data.surgery_recommended),
           recommendationLabel: data.recommendation_label ?? "Recommendation",
@@ -358,7 +362,7 @@ export default function PrototypePage() {
 
         setResult(mapped);
       } else {
-        // ---------- local, frozen TS logic (for Vercel) ----------
+        // ---------- local, frozen TS logic ----------
         const localInputs: Required<InputState> = {
           ...(inputs as InputState),
           age: inputs.age || "0",
@@ -369,7 +373,7 @@ export default function PrototypePage() {
           sf36PCS: inputs.sf36PCS || "0",
           sf36MCS: inputs.sf36MCS || "0",
           sex: inputs.sex || "M",
-          severity: (inputs.severity || "moderate") as Severity,
+          severity: derivedSeverity,
           canalRatio: (inputs.canalRatio || "50–60%") as CanalRatioCat,
           t2Signal: (inputs.t2Signal || "none") as T2Signal,
         };
@@ -385,10 +389,13 @@ export default function PrototypePage() {
     }
   }
 
-  // small helpers for rendering
+  // helpers for rendering
   function formatPct(p: number): string {
     return `${Math.round(clamp01(p) * 100)}%`;
   }
+
+  const mjoaNum = Number(inputs.baselineMJOA);
+  const autoSeverity = Number.isNaN(mjoaNum) ? null : deriveSeverity(mjoaNum);
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900">
@@ -520,21 +527,21 @@ export default function PrototypePage() {
                     />
                   </div>
 
-                  {/* mJOA-derived severity (optional override) */}
+                  {/* mJOA-derived severity (auto, read-only) */}
                   <div>
-                    <label className="mb-1 block font-medium">Severity (auto from mJOA)</label>
-                    <select
-                      className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
-                      value={inputs.severity}
-                      onChange={(e) =>
-                        updateField("severity", e.target.value as Severity | "")
-                      }
-                    >
-                      <option value="">Auto</option>
-                      <option value="mild">Mild (mJOA ≥15)</option>
-                      <option value="moderate">Moderate (mJOA 12–14)</option>
-                      <option value="severe">Severe (mJOA &lt;12)</option>
-                    </select>
+                    <label className="mb-1 block font-medium">
+                      mJOA-based severity (auto)
+                    </label>
+                    <div className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-800">
+                      {autoSeverity === null && "Enter mJOA to auto-derive severity."}
+                      {autoSeverity === "mild" && "Mild (mJOA ≥ 15)"}
+                      {autoSeverity === "moderate" && "Moderate (mJOA 12–14)"}
+                      {autoSeverity === "severe" && "Severe (mJOA < 12)"}
+                    </div>
+                    <p className="mt-1 text-xs text-slate-500">
+                      Severity is locked to the mJOA value to avoid mismatches that could
+                      change recommendations.
+                    </p>
                   </div>
 
                   {/* Canal ratio */}
@@ -715,8 +722,8 @@ export default function PrototypePage() {
                   <p className="text-sm text-slate-700">
                     Run a single-patient recommendation to see surgery vs non-operative
                     probabilities, risk bands, and expected benefit. The model uses
-                    mJOA-based severity, symptom duration, MRI cord signal, canal compromise,
-                    OPLL, gait impairment, and age.
+                    mJOA-based severity, symptom duration, MRI cord signal, canal
+                    compromise, OPLL, gait impairment, and age.
                   </p>
                 </div>
 
@@ -843,11 +850,42 @@ export default function PrototypePage() {
                     )}
                   </div>
 
+                  {/* P(MCID) by approach bars */}
+                  <div className="mt-6">
+                    <h3 className="mb-2 text-sm font-semibold text-slate-900">
+                      P(MCID) by approach (approximate bands)
+                    </h3>
+                    <div className="space-y-2 text-xs text-slate-700">
+                      {(["anterior", "posterior", "circumferential"] as ApproachKey[]).map(
+                        (key) => {
+                          const pct = formatPct(result.approachProbs[key]);
+                          const label =
+                            key === "anterior"
+                              ? "Anterior"
+                              : key === "posterior"
+                              ? "Posterior"
+                              : "Circumferential";
+                          return (
+                            <div key={key} className="flex items-center gap-3">
+                              <div className="w-28 font-medium">{label}</div>
+                              <div className="flex-1 h-2 rounded-full bg-slate-100">
+                                <div
+                                  className="h-2 rounded-full bg-emerald-500"
+                                  style={{ width: pct }}
+                                />
+                              </div>
+                              <div className="w-10 text-right">{pct}</div>
+                            </div>
+                          );
+                        }
+                      )}
+                    </div>
+                  </div>
+
                   <div className="mt-4 text-xs text-slate-500">
                     Patterns are derived from guideline-informed logic and synthetic
                     outcome data and are intended to support, not replace, surgeon
-                    judgment. Exact probabilities will be recalibrated once real Ascension
-                    Texas outcome data are available.
+                    judgment.
                   </div>
                 </section>
               </div>
@@ -868,7 +906,7 @@ export default function PrototypePage() {
             </section>
           </>
         ) : (
-          // --------- Batch tab (layout kept simple, you can extend later) ----------
+          // --------- Batch tab placeholder ----------
           <section className="rounded-2xl bg-white p-6 text-sm shadow-sm">
             <h2 className="mb-3 text-lg font-semibold text-slate-900">
               Batch (CSV) – coming next
