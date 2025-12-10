@@ -14,7 +14,7 @@ type InputState = {
   sex: Sex | "";
   smoker: "0" | "1"; // 0 = non / former, 1 = current
   symptomDurationMonths: string;
-  severity: Severity | ""; // kept in type, but logic always derives from mJOA
+  severity: Severity | ""; // logic always derives from mJOA
   baselineMJOA: string;
   levelsOperated: string;
   canalRatio: CanalRatioCat | "";
@@ -50,7 +50,7 @@ type SingleResult = {
   uncertainty: UncertaintyLevel;
 };
 
-// ---- Default starting state (same as your pre-filled example) ----
+// ---- Default starting state ----
 const initialInputs: InputState = {
   age: "65",
   sex: "M",
@@ -70,32 +70,28 @@ const initialInputs: InputState = {
   sf36MCS: "45",
 };
 
-// helper: derive severity strictly from mJOA
 function deriveSeverity(mJOA: number): Severity {
   if (mJOA >= 15) return "mild";
   if (mJOA >= 12) return "moderate";
   return "severe";
 }
 
-// -----------------
-// Local rule engine
-// -----------------
 function clamp01(x: number): number {
   return Math.min(1, Math.max(0, x));
 }
 
+// -----------------
+// Local rule engine
+// -----------------
 function computeLocalRecommendation(input: Required<InputState>): SingleResult {
-  // Numeric conversions (already validated in handler)
   const age = Number(input.age);
   const dur = Number(input.symptomDurationMonths);
   const mJOA = Number(input.baselineMJOA);
   const levels = Number(input.levelsOperated);
   const ndi = Number(input.baselineNDI);
 
-  // ---- 1) severity derived from mJOA only ----
   const severity: Severity = deriveSeverity(mJOA);
 
-  // ---- 2) simple risk/benefit scores on 0–100 ----
   let baseRisk = 10;
   let baseBenefit = 10;
 
@@ -152,7 +148,7 @@ function computeLocalRecommendation(input: Required<InputState>): SingleResult {
       ? "Moderate chance of clinically meaningful improvement with surgery."
       : "Lower modeled chance of large mJOA change; surgery may still help pain or stability in selected patients.";
 
-  // ---- 3) surgery recommendation ----
+  // surgery recommendation
   let surgeryRecommended = false;
   let recommendationLabel = "Non-operative trial reasonable";
 
@@ -170,19 +166,15 @@ function computeLocalRecommendation(input: Required<InputState>): SingleResult {
   ) {
     surgeryRecommended = true;
     recommendationLabel = "Consider surgery";
-  } else {
-    surgeryRecommended = false;
-    recommendationLabel = "Non-operative trial reasonable";
   }
 
-  // ---- 4) approach probabilities (heuristic) ----
+  // approach probabilities
   let approach: ApproachProbs = {
     anterior: 0.33,
     posterior: 0.34,
     circumferential: 0.33,
   };
 
-  // simple patterns: multilevel + OPLL → posterior leaning, focal + high COR → anterior leaning
   if (input.t2Signal === "multilevel" || levels >= 3 || input.opll === "1") {
     approach = { anterior: 0.2, posterior: 0.6, circumferential: 0.2 };
   } else if (input.t2Signal === "focal" && (input.canalRatio === ">60%" || levels <= 2)) {
@@ -197,7 +189,6 @@ function computeLocalRecommendation(input: Required<InputState>): SingleResult {
     ["circumferential", approach.circumferential],
   ];
 
-  // normalize + pick best
   const sum = vals.reduce((s, [, v]) => s + v, 0) || 1;
   const norm: ApproachProbs = {
     anterior: approach.anterior / sum,
@@ -292,12 +283,10 @@ export default function PrototypePage() {
   const [batchError, setBatchError] = useState<string | null>(null);
   const [batchLoading, setBatchLoading] = useState(false);
 
-  // helper to update fields
   function updateField<K extends keyof InputState>(key: K, value: InputState[K]) {
     setInputs((prev) => ({ ...prev, [key]: value }));
   }
 
-  // reset back to blank
   function handleReset() {
     setInputs({
       age: "",
@@ -321,10 +310,15 @@ export default function PrototypePage() {
     setError(null);
   }
 
+  function handlePrintPage() {
+    if (typeof window !== "undefined") {
+      window.print();
+    }
+  }
+
   async function handleRunSingle() {
     setError(null);
 
-    // ---- validation + parsing ----
     const requiredNumeric: (keyof InputState)[] = [
       "age",
       "symptomDurationMonths",
@@ -361,13 +355,13 @@ export default function PrototypePage() {
       const apiBase = process.env.NEXT_PUBLIC_DCM_API_URL;
 
       if (apiBase) {
-        // ---------- API path ----------
+        // API path
         const payload = {
           age: Number(inputs.age),
           sex: inputs.sex,
           smoker: Number(inputs.smoker),
           symptom_duration_months: Number(inputs.symptomDurationMonths),
-          severity: derivedSeverity, // always derived from mJOA
+          severity: derivedSeverity,
           baseline_mJOA: Number(inputs.baselineMJOA),
           levels_operated: Number(inputs.levelsOperated),
           OPLL: Number(inputs.opll),
@@ -416,7 +410,7 @@ export default function PrototypePage() {
 
         setResult(mapped);
       } else {
-        // ---------- local, frozen TS logic ----------
+        // Local TS logic
         const localInputs: Required<InputState> = {
           ...(inputs as InputState),
           age: inputs.age || "0",
@@ -443,13 +437,12 @@ export default function PrototypePage() {
     }
   }
 
-  // Batch handler (local TS logic for now)
   async function handleRunBatch() {
     setBatchError(null);
     setBatchResults(null);
 
     if (!batchCsv.trim()) {
-      setBatchError("Paste a CSV with a header row and at least one patient.");
+      setBatchError("Paste a CSV or upload a file with at least one patient.");
       return;
     }
 
@@ -524,6 +517,16 @@ export default function PrototypePage() {
     } finally {
       setBatchLoading(false);
     }
+  }
+
+  function handleBatchFileChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      setBatchCsv(String(reader.result ?? ""));
+    };
+    reader.readAsText(file);
   }
 
   // PDF helpers
@@ -658,7 +661,6 @@ export default function PrototypePage() {
     doc.save("dcm_batch_summary.pdf");
   }
 
-  // helpers for rendering
   function formatPct(p: number): string {
     return `${Math.round(clamp01(p) * 100)}%`;
   }
@@ -804,7 +806,7 @@ export default function PrototypePage() {
                     />
                   </div>
 
-                  {/* mJOA-derived severity (auto, read-only) */}
+                  {/* mJOA-derived severity (auto) */}
                   <div>
                     <label className="mb-1 block text-sm font-semibold text-slate-800">
                       mJOA-based severity (auto)
@@ -1003,6 +1005,13 @@ export default function PrototypePage() {
                   >
                     Save summary (PDF)
                   </button>
+                  <button
+                    type="button"
+                    onClick={handlePrintPage}
+                    className="rounded-full border border-slate-200 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
+                  >
+                    Print page
+                  </button>
                   {error && <div className="text-sm text-red-600">{error}</div>}
                 </div>
               </section>
@@ -1061,12 +1070,12 @@ export default function PrototypePage() {
                     </span>
                   </div>
                   <div className="grid gap-4 md:grid-cols-2 text-sm">
-                    <div>
-                      <div className="mb-1 font-medium text-slate-900">
+                    <div className="rounded-2xl bg-rose-50 p-4 border border-rose-100">
+                      <div className="inline-flex items-center gap-2 rounded-full bg-rose-100 px-3 py-1 text-[11px] font-semibold uppercase tracking-wide text-rose-700">
                         Risk without surgery
                       </div>
-                      <div className="mb-1 text-slate-700">{result.riskText}</div>
-                      <div className="mt-2 h-3 w-full rounded-full bg-rose-100">
+                      <div className="mt-2 text-slate-700">{result.riskText}</div>
+                      <div className="mt-3 h-3 w-full rounded-full bg-rose-100">
                         <div
                           className="h-3 rounded-full bg-rose-500"
                           style={{ width: `${result.riskScore}%` }}
@@ -1077,12 +1086,12 @@ export default function PrototypePage() {
                         {result.riskScore.toFixed(0)}%
                       </div>
                     </div>
-                    <div>
-                      <div className="mb-1 font-medium text-slate-900">
+                    <div className="rounded-2xl bg-emerald-50 p-4 border border-emerald-100">
+                      <div className="inline-flex items-center gap-2 rounded-full bg-emerald-100 px-3 py-1 text-[11px] font-semibold uppercase tracking-wide text-emerald-700">
                         Expected chance of meaningful improvement with surgery
                       </div>
-                      <div className="mb-1 text-slate-700">{result.benefitText}</div>
-                      <div className="mt-2 h-3 w-full rounded-full bg-emerald-100">
+                      <div className="mt-2 text-slate-700">{result.benefitText}</div>
+                      <div className="mt-3 h-3 w-full rounded-full bg-emerald-100">
                         <div
                           className="h-3 rounded-full bg-emerald-500"
                           style={{ width: `${result.benefitScore}%` }}
@@ -1208,12 +1217,30 @@ export default function PrototypePage() {
           <section className="rounded-2xl bg-white p-6 text-sm shadow-sm">
             <h2 className="mb-3 text-xl font-semibold text-slate-900">Batch (CSV)</h2>
             <p className="mb-3 text-slate-700">
-              Paste a CSV with one row per patient using this header (order can match
-              your export):
+              Upload a CSV file or paste data with one row per patient using this header
+              (order can match your export):
             </p>
             <p className="mb-3 rounded-lg bg-slate-50 px-3 py-2 text-[11px] font-mono text-slate-700">
               age,sex,smoker,symptom_duration_months,severity,baseline_mJOA,levels_operated,canal_occupying_ratio_cat,T2_signal,OPLL,T1_hypointensity,gait_impairment,psych_disorder,baseline_NDI,baseline_SF36_PCS,baseline_SF36_MCS
             </p>
+
+            {/* File upload */}
+            <div className="mb-3 flex flex-wrap items-center gap-3 text-xs">
+              <label className="text-slate-700 font-semibold">
+                Upload CSV file:
+                <input
+                  type="file"
+                  accept=".csv,text/csv"
+                  onChange={handleBatchFileChange}
+                  className="ml-3 text-xs"
+                />
+              </label>
+              <span className="text-slate-500">
+                Uploaded content will appear in the box below so you can review or edit
+                if needed.
+              </span>
+            </div>
+
             <textarea
               rows={10}
               className="w-full rounded-lg border border-slate-200 px-3 py-2 font-mono text-xs text-slate-800"
@@ -1237,6 +1264,13 @@ export default function PrototypePage() {
                 className="rounded-full border border-slate-200 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
               >
                 Save batch summary (PDF)
+              </button>
+              <button
+                type="button"
+                onClick={handlePrintPage}
+                className="rounded-full border border-slate-200 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
+              >
+                Print batch view
               </button>
               {batchError && <div className="text-sm text-red-600">{batchError}</div>}
             </div>
