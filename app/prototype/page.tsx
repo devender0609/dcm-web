@@ -538,10 +538,6 @@ export default function PrototypePage() {
                       {autoSeverity === "moderate" && "Moderate (mJOA 12–14)"}
                       {autoSeverity === "severe" && "Severe (mJOA < 12)"}
                     </div>
-                    <p className="mt-1 text-xs text-slate-500">
-                      Severity is locked to the mJOA value to avoid mismatches that could
-                      change recommendations.
-                    </p>
                   </div>
 
                   {/* Canal ratio */}
@@ -893,15 +889,12 @@ export default function PrototypePage() {
 
             {/* Bottom info card */}
             <section className="rounded-2xl bg-white p-5 text-xs text-slate-600 shadow-sm">
-              <div className="mb-1 font-semibold">
-                Hybrid guideline + ML engine (development phase)
-              </div>
+              <div className="mb-1 font-semibold">Hybrid guideline + ML engine</div>
               <p>
                 This prototype blends AO Spine / WFNS guideline concepts (myelopathy
                 severity, cord signal, canal compromise, OPLL, gait) with patterns learned
-                from large synthetic DCM outcome cohorts. The underlying model is frozen
-                for this version; it does not learn continuously from use. It is intended
-                to structure discussions and document reasoning, not to mandate treatment.
+                from large synthetic DCM outcome cohorts. It is intended to structure
+                discussions and document reasoning, not to mandate treatment.
               </p>
             </section>
           </>
