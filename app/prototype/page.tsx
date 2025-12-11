@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState } from "react";
+import Link from "next/link";
 import jsPDF from "jspdf";
 
 // ---- Types that mirror the form ----
@@ -786,6 +787,16 @@ export default function PrototypePage() {
 
       {/* Body */}
       <main className="mx-auto max-w-6xl px-6 py-8 space-y-6">
+        {/* Back to main page */}
+        <div className="mb-2">
+          <Link
+            href="/"
+            className="inline-flex rounded-full bg-slate-200 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-300"
+          >
+            ← Back to main page
+          </Link>
+        </div>
+
         {/* Tabs */}
         <div className="inline-flex rounded-full bg-slate-100 p-1 text-sm">
           <button
