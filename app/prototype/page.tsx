@@ -1121,57 +1121,37 @@ export default function PrototypePage() {
                 )}
               </section>
 
-              {/* Right: figure-1 style explanation panel */}
-              <section className="rounded-2xl bg-slate-900 p-6 text-xs text-slate-100 shadow-sm">
-                <h2 className="mb-2 text-sm font-semibold text-emerald-200">
-                  1. Should this patient undergo surgery?
-                </h2>
-                <p className="mb-3 text-[11px] text-slate-200">
-                  Run a single-patient recommendation to see surgery vs non-operative
-                  probabilities, risk bands, and expected benefit. The model uses
-                  mJOA-based severity, symptom duration, MRI cord signal, canal
-                  compromise, OPLL, gait impairment, and age.
-                </p>
+              {/* Right: explanation column – Figure 1 style (two white cards) */}
+              <section className="space-y-4">
+                <div className="rounded-2xl bg-white p-5 shadow-sm">
+                  <h3 className="mb-2 text-base font-semibold text-emerald-700">
+                    1. Should this patient undergo surgery?
+                  </h3>
+                  <p className="text-sm text-slate-700">
+                    Run a single-patient recommendation to see surgery vs non-operative
+                    probabilities, risk bands, and expected benefit. The model uses
+                    mJOA-based severity, symptom duration, MRI cord signal, canal
+                    compromise, OPLL, gait impairment, and age.
+                  </p>
+                </div>
 
-                <h3 className="mt-4 mb-1 text-[11px] font-semibold text-emerald-200">
-                  2. If surgery is offered, which approach?
-                </h3>
-                <p className="mb-2 text-[11px] text-slate-200">
-                  The tool compares estimated probabilities of achieving clinically
-                  meaningful mJOA improvement (MCID) with anterior, posterior, and
-                  circumferential procedures. Uncertainty reflects how close these
-                  probabilities are to each other: low = one clear favorite, high =
-                  several similar options where surgeon preferences, alignment, and
-                  comorbidities may drive the final choice.
-                </p>
-
-                <h3 className="mt-4 mb-1 text-[11px] font-semibold text-emerald-200">
-                  How to interpret uncertainty
-                </h3>
-                <p className="mb-2 text-[11px] text-slate-200">
-                  When one approach is clearly favored (e.g., posterior-only for extensive
-                  multilevel disease), the label will be{" "}
-                  <span className="font-semibold">low uncertainty</span>. If anterior and
-                  posterior strategies are close in predicted benefit, the label may read{" "}
-                  <span className="font-semibold">moderate</span> or{" "}
-                  <span className="font-semibold">high</span>, signaling that surgeon
-                  experience, alignment goals, and patient preferences should drive the
-                  final choice.
-                </p>
-
-                <h3 className="mt-4 mb-1 text-[11px] font-semibold text-emerald-200">
-                  Hybrid guideline + ML engine
-                </h3>
-                <p className="text-[11px] text-slate-200">
-                  This prototype blends AO Spine / WFNS guideline concepts (myelopathy
-                  severity, cord signal, canal compromise, OPLL, gait) with patterns
-                  learned from large synthetic DCM outcome cohorts. It is intended to
-                  structure discussions and document reasoning, not to mandate treatment.
-                </p>
+                <div className="rounded-2xl bg-white p-5 shadow-sm">
+                  <h3 className="mb-2 text-base font-semibold text-sky-700">
+                    2. If surgery is offered, which approach?
+                  </h3>
+                  <p className="text-sm text-slate-700">
+                    The tool compares estimated probabilities of achieving clinically
+                    meaningful mJOA improvement (MCID) with anterior, posterior, and
+                    circumferential procedures. Uncertainty reflects how close these
+                    probabilities are to each other: low = one clear favorite, high =
+                    several similar options, where surgeon preferences, alignment, and
+                    comorbidities may drive the final choice.
+                  </p>
+                </div>
               </section>
             </div>
 
-            {/* Results card – laid out like Figure 1 */}
+            {/* Results card – Figure 1 layout */}
             <section className="rounded-2xl bg-white p-6 shadow-sm">
               {!result ? (
                 <p className="text-sm text-slate-500">
@@ -1180,133 +1160,192 @@ export default function PrototypePage() {
                   estimates.
                 </p>
               ) : (
-                <div className="space-y-6 text-sm">
+                <div className="space-y-8 text-sm">
                   {/* Section 1: Should this patient undergo surgery? */}
                   <div>
                     <h2 className="text-lg font-semibold text-slate-900">
                       1. Should this patient undergo surgery?
                     </h2>
-                    <p className="mt-1 text-sm font-semibold text-emerald-800">
-                      Recommendation: {result.recommendationLabel}
+                    <p className="mt-1 text-sm">
+                      <span className="font-semibold">Recommendation: </span>
+                      <span className="font-semibold text-emerald-800">
+                        {result.recommendationLabel}
+                      </span>
                     </p>
                     <p className="mt-1 text-xs text-slate-600">
-                      This is a guide based on modeled risk and benefit and does not
-                      replace surgeon judgment or patient preference.
+                      This is a guide based on modeled risk / benefit and does not replace
+                      surgeon judgment or patient preference.
                     </p>
 
                     <div className="mt-4 grid gap-4 md:grid-cols-2">
-                      <div className="rounded-xl border border-rose-100 bg-rose-50 p-4">
+                      {/* Risk card with bar */}
+                      <div className="rounded-2xl border border-rose-100 bg-rose-50 p-4">
                         <h3 className="text-[11px] font-semibold uppercase tracking-wide text-rose-700">
                           Risk without surgery
                         </h3>
-                        <p className="mt-1 text-2xl font-semibold text-rose-600">
-                          {result.riskScore.toFixed(0)}%
-                        </p>
                         <p className="mt-1 text-xs text-slate-700">
                           {result.riskText}
                         </p>
+                        <div className="mt-3 h-3 w-full rounded-full bg-rose-100">
+                          <div
+                            className="h-3 rounded-full bg-rose-500"
+                            style={{ width: `${result.riskScore}%` }}
+                          />
+                        </div>
+                        <div className="mt-1 text-[11px] text-rose-700">
+                          Risk of neurological worsening / failure to improve:{" "}
+                          {result.riskScore.toFixed(0)}%
+                        </div>
                       </div>
 
-                      <div className="rounded-xl border border-emerald-100 bg-emerald-50 p-4">
+                      {/* Benefit card with bar */}
+                      <div className="rounded-2xl border border-emerald-100 bg-emerald-50 p-4">
                         <h3 className="text-[11px] font-semibold uppercase tracking-wide text-emerald-700">
                           Expected chance of meaningful improvement with surgery
                         </h3>
-                        <p className="mt-1 text-2xl font-semibold text-emerald-600">
-                          {result.benefitScore.toFixed(0)}%
-                        </p>
                         <p className="mt-1 text-xs text-slate-700">
                           {result.benefitText}
                         </p>
+                        <div className="mt-3 h-3 w-full rounded-full bg-emerald-100">
+                          <div
+                            className="h-3 rounded-full bg-emerald-500"
+                            style={{ width: `${result.benefitScore}%` }}
+                          />
+                        </div>
+                        <div className="mt-1 text-[11px] text-emerald-700">
+                          Estimated probability of mJOA MCID or comparable functional
+                          improvement: {result.benefitScore.toFixed(0)}%
+                        </div>
                       </div>
                     </div>
                   </div>
 
                   {/* Section 2: If surgery is offered, which approach? */}
                   <div>
-                    <h2 className="text-lg font-semibold text-slate-900">
-                      2. If surgery is offered, which approach?
-                    </h2>
-
-                    <div className="mt-3 rounded-xl border border-slate-200 bg-slate-50 p-4">
-                      <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-600">
-                        P(MCID) by approach (approximate bands)
-                      </h3>
-
-                      <div className="mt-3 grid gap-3 md:grid-cols-3">
-                        {(["anterior", "posterior", "circumferential"] as ApproachKey[]).map(
-                          (key) => {
-                            const p = result.approachProbs[key];
-                            const isBest = result.bestApproach === key;
-                            return (
-                              <div
-                                key={key}
-                                className={`rounded-lg border px-3 py-2 text-xs ${
-                                  isBest
-                                    ? "border-emerald-500 bg-emerald-50"
-                                    : "border-slate-200 bg-white"
-                                }`}
-                              >
-                                <div className="flex items-center justify-between">
-                                  <span className="font-semibold uppercase text-slate-800">
-                                    {key}
-                                  </span>
-                                  <span
-                                    className={`text-xs font-semibold ${
-                                      isBest ? "text-emerald-700" : "text-slate-500"
-                                    }`}
-                                  >
-                                    {formatPct(p)}
-                                  </span>
-                                </div>
-                                <p className="mt-1 text-[11px] text-slate-600">
-                                  {isBest
-                                    ? "Highest estimated chance of clinically meaningful improvement."
-                                    : "Lower modeled probability compared with the leading approach."}
-                                </p>
-                              </div>
-                            );
-                          }
-                        )}
-                      </div>
-
-                      <p className="mt-3 text-[11px] text-slate-600">
+                    <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+                      <h2 className="text-lg font-semibold text-slate-900">
+                        2. If surgery is offered, which approach?
+                      </h2>
+                      <p className="text-[11px] text-slate-600">
                         <span className="font-semibold">Uncertainty: </span>
                         {result.uncertainty === "low" && (
                           <>
-                            <span className="text-emerald-700 font-semibold">
-                              Low
-                            </span>
-                            {" – one clear favorite."}
+                            <span className="font-semibold text-emerald-700">Low</span>
+                            {" (one clear favorite; high = several similar options)."}
                           </>
                         )}
                         {result.uncertainty === "moderate" && (
                           <>
-                            <span className="text-amber-700 font-semibold">
-                              Moderate
-                            </span>
-                            {
-                              " – anterior and posterior strategies are reasonably close; surgeon experience and alignment goals are important."
-                            }
+                            <span className="font-semibold text-amber-700">Moderate</span>
+                            {" (anterior and posterior reasonably close)."}
                           </>
                         )}
                         {result.uncertainty === "high" && (
                           <>
-                            <span className="text-rose-700 font-semibold">
-                              High
-                            </span>
+                            <span className="font-semibold text-rose-700">High</span>
                             {
-                              " – predicted benefits are very similar across approaches, emphasizing the need for individualized discussion."
+                              " (predicted benefits are very similar – emphasize individualized decision-making)."
                             }
                           </>
                         )}
                       </p>
                     </div>
 
+                    {/* Three big approach cards */}
+                    <div className="mt-3 grid gap-3 md:grid-cols-3">
+                      {(["anterior", "posterior", "circumferential"] as ApproachKey[]).map(
+                        (key) => {
+                          const pct = formatPct(result.approachProbs[key]);
+                          const isBest = result.bestApproach === key;
+                          const title =
+                            key === "anterior"
+                              ? "Anterior"
+                              : key === "posterior"
+                              ? "Posterior"
+                              : "Circumferential";
+                          return (
+                            <div
+                              key={key}
+                              className={`rounded-2xl border px-4 py-3 text-xs ${
+                                isBest
+                                  ? "border-emerald-400 bg-emerald-50"
+                                  : "border-slate-200 bg-white"
+                              }`}
+                            >
+                              <div className="flex items-baseline justify-between">
+                                <span className="text-[11px] font-semibold uppercase text-slate-700">
+                                  {title}
+                                </span>
+                                <span
+                                  className={`text-base font-semibold ${
+                                    isBest ? "text-emerald-700" : "text-slate-700"
+                                  }`}
+                                >
+                                  {pct}
+                                </span>
+                              </div>
+                              <p className="mt-1 text-[11px] text-slate-600">
+                                {isBest
+                                  ? "Highest estimated chance of clinically meaningful improvement."
+                                  : "Lower modeled probability compared with the leading approach."}
+                              </p>
+                            </div>
+                          );
+                        }
+                      )}
+                    </div>
+
+                    {/* P(MCID) bars as separate block */}
+                    <div className="mt-4 rounded-2xl bg-slate-50 p-4 border border-slate-200">
+                      <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-600">
+                        P(MCID) by approach (approximate bands)
+                      </h3>
+                      <div className="mt-3 space-y-2 text-[11px]">
+                        {(["anterior", "posterior", "circumferential"] as ApproachKey[]).map(
+                          (key) => {
+                            const pct = formatPct(result.approachProbs[key]);
+                            const label =
+                              key === "anterior"
+                                ? "Anterior"
+                                : key === "posterior"
+                                ? "Posterior"
+                                : "Circumferential";
+                            const isBest = result.bestApproach === key;
+                            return (
+                              <div key={key} className="flex items-center gap-2">
+                                <div className="w-24 text-right text-xs text-slate-600">
+                                  {label}
+                                </div>
+                                <div className="flex-1">
+                                  <div className="h-2 w-full rounded-full bg-slate-200">
+                                    <div
+                                      className={`h-2 rounded-full ${
+                                        isBest ? "bg-emerald-500" : "bg-emerald-300"
+                                      }`}
+                                      style={{ width: pct }}
+                                    />
+                                  </div>
+                                </div>
+                                <div className="w-10 text-right">{pct}</div>
+                              </div>
+                            );
+                          }
+                        )}
+                      </div>
+                      <p className="mt-3 text-[11px] text-slate-600">
+                        Patterns are derived from guideline-informed logic and synthetic
+                        outcome data and are intended to support, not replace, surgeon
+                        judgment.
+                      </p>
+                    </div>
+
                     <p className="mt-3 rounded-xl bg-slate-100 px-4 py-3 text-[11px] text-slate-700">
                       <span className="font-semibold">Hybrid guideline + ML engine.</span>{" "}
-                      Patterns are derived from guideline-informed logic and synthetic
-                      outcome data and are intended to support, not replace, surgeon
-                      judgment.
+                      This prototype blends AO Spine / WFNS guideline concepts (myelopathy
+                      severity, cord signal, canal compromise, OPLL, gait) with patterns
+                      learned from large synthetic DCM outcome cohorts. It is intended to
+                      structure discussions and document reasoning, not to mandate
+                      treatment.
                     </p>
                   </div>
                 </div>
