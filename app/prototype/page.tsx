@@ -42,8 +42,8 @@ type SingleResult = {
   surgeryRecommended: boolean;
   recommendationLabel: string;
   riskScore: number;
-  benefitScore: number;
   riskText: string;
+  benefitScore: number;
   benefitText: string;
   approachProbs: ApproachProbs;
   bestApproach: ApproachKey | "none";
@@ -211,8 +211,8 @@ function computeLocalRecommendation(input: Required<InputState>): SingleResult {
     surgeryRecommended,
     recommendationLabel,
     riskScore,
-    benefitScore,
     riskText,
+    benefitScore,
     benefitText,
     approachProbs: norm,
     bestApproach: best,
@@ -433,10 +433,10 @@ export default function PrototypePage() {
           surgeryRecommended: Boolean(data.surgery_recommended),
           recommendationLabel: data.recommendation_label ?? "Recommendation",
           riskScore: data.risk_score ?? 0,
-          benefitScore: data.benefit_score ?? 0,
           riskText:
             data.risk_text ??
             "Risk of neurological worsening or failure to improve without surgery.",
+          benefitScore: data.benefit_score ?? 0,
           benefitText:
             data.benefit_text ??
             "Estimated chance of clinically meaningful mJOA improvement with surgery.",
@@ -670,7 +670,6 @@ export default function PrototypePage() {
       `Expected chance of meaningful improvement with surgery: ${result.benefitScore.toFixed(
         0
       )}% – ${result.benefitText}`,
-
       10,
       69
     );
@@ -700,8 +699,16 @@ export default function PrototypePage() {
     doc.text("DCM Surgical Decision Support – Batch Summary", 10, 15);
 
     const total = batchResults.length;
-    const nSurg = batchResults.filter((r) => r.result.surgeryRecommended).length;
-    const nNonSurg = total - nSurg;
+
+    const nSurgOnly = batchResults.filter(
+      (r) => r.result.recommendationLabel === "Surgery recommended"
+    ).length;
+    const nConsider = batchResults.filter(
+      (r) => r.result.recommendationLabel === "Consider surgery"
+    ).length;
+    const nNonOp = batchResults.filter(
+      (r) => r.result.recommendationLabel === "Non-operative trial reasonable"
+    ).length;
 
     const approachCounts: Record<ApproachKey, number> = {
       anterior: 0,
@@ -716,15 +723,16 @@ export default function PrototypePage() {
 
     doc.setFontSize(10);
     doc.text(`Total patients: ${total}`, 10, 25);
-    doc.text(`Surgery recommended: ${nSurg}`, 10, 31);
-    doc.text(`Non-operative trial reasonable / consider: ${nNonSurg}`, 10, 37);
+    doc.text(`Surgery recommended: ${nSurgOnly}`, 10, 31);
+    doc.text(`Consider surgery: ${nConsider}`, 10, 37);
+    doc.text(`Non-operative trial reasonable: ${nNonOp}`, 10, 43);
     doc.text(
       `Best approach – Anterior: ${approachCounts.anterior}, Posterior: ${approachCounts.posterior}, Circumferential: ${approachCounts.circumferential}`,
       10,
-      43
+      49
     );
 
-    let y = 55;
+    let y = 61;
     doc.setFontSize(9);
     doc.text("Per-patient snapshot (index, age, mJOA, recommendation, best approach)", 10, y);
     y += 6;
@@ -803,6 +811,17 @@ export default function PrototypePage() {
             Batch (CSV)
           </button>
         </div>
+
+        {/* Helper text under tabs */}
+        {tab === "single" ? (
+          <p className="text-xs text-slate-500">
+            Numeric ranges: Age 18–95; mJOA 0–18; planned levels 1–8; NDI 0–100; SF-36 PCS/MCS 10–80; symptom duration 0–240 months.
+          </p>
+        ) : (
+          <p className="text-xs text-slate-500">
+            Batch CSV should respect the same ranges (Age 18–95; mJOA 0–18; levels 1–8; NDI 0–100; SF-36 PCS/MCS 10–80; symptom duration 0–240). See header below for required columns.
+          </p>
+        )}
 
         {tab === "single" ? (
           <>
@@ -1102,7 +1121,7 @@ export default function PrototypePage() {
                 )}
               </section>
 
-              {/* Right: explanation panel (unchanged content, shortened here for brevity) */}
+              {/* Right: explanation panel */}
               <section className="rounded-2xl bg-slate-900 p-6 text-xs text-slate-100 shadow-sm">
                 <h2 className="mb-3 text-sm font-semibold text-emerald-200">
                   How to interpret this tool
