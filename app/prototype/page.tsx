@@ -14,9 +14,9 @@ type InputState = {
   sex: Sex | "";
   smoker: "0" | "1"; // 0 = non / former, 1 = current
   symptomDurationMonths: string;
-  severity: Severity | ""; // logic always derives from mJOA
   baselineMJOA: string;
   levelsOperated: string;
+  severityOverride: Severity | ""; // allow override in batch if needed
   canalRatio: CanalRatioCat | "";
   t2Signal: T2Signal | "";
   opll: "0" | "1";
@@ -30,109 +30,148 @@ type InputState = {
 
 type ApproachKey = "anterior" | "posterior" | "circumferential";
 
-type ApproachProbs = {
-  anterior: number;
-  posterior: number;
-  circumferential: number;
-};
-
-type UncertaintyLevel = "low" | "moderate" | "high";
-
-type SingleResult = {
-  surgeryRecommended: boolean;
-  recommendationLabel: string;
+type ResultState = {
   riskScore: number;
   riskText: string;
   benefitScore: number;
   benefitText: string;
-  approachProbs: ApproachProbs;
-  bestApproach: ApproachKey | "none";
-  uncertainty: UncertaintyLevel;
+  recommendationLabel: string;
+  bestApproach: ApproachKey;
+  approachProbs: Record<ApproachKey, number>;
+  uncertainty: "low" | "moderate" | "high";
 };
 
-// ---- Default starting state ----
-const initialInputs: InputState = {
-  age: "65",
-  sex: "M",
-  smoker: "0",
-  symptomDurationMonths: "12",
-  severity: "moderate",
-  baselineMJOA: "13",
-  levelsOperated: "3",
-  canalRatio: "50–60%",
-  t2Signal: "multilevel",
-  opll: "0",
-  t1Hypo: "0",
-  gaitImpairment: "1",
-  psychDisorder: "0",
-  baselineNDI: "40",
-  sf36PCS: "40",
-  sf36MCS: "45",
+// batch result row
+type BatchResultRow = {
+  index: number;
+  age: number | null;
+  baselineMJOA: number | null;
+  severity: Severity | "";
+  riskScore: number | null;
+  benefitScore: number | null;
+  recommendationLabel: string;
+  bestApproach: ApproachKey | "";
+  error?: string;
 };
 
-function deriveSeverity(mJOA: number): Severity {
-  if (mJOA >= 15) return "mild";
-  if (mJOA >= 12) return "moderate";
+function clampNumber(value: number, min: number, max: number): number {
+  return Math.min(Math.max(value, min), max);
+}
+
+// ---- Helpers to compute severity and scoring ----
+function deriveSeverity(mjoa: number | null): Severity | "" {
+  if (mjoa == null || Number.isNaN(mjoa)) return "";
+  if (mjoa >= 15) return "mild";
+  if (mjoa >= 12) return "moderate";
   return "severe";
 }
 
-function clamp01(x: number): number {
-  return Math.min(1, Math.max(0, x));
-}
+function computeModel(
+  input: InputState
+): ResultState | { error: string } {
+  // Basic validation – keep same as before
+  const ageNum = parseFloat(input.age);
+  const symDur = parseFloat(input.symptomDurationMonths);
+  const mjoaNum = parseFloat(input.baselineMJOA);
+  const levels = parseFloat(input.levelsOperated);
+  const ndi = parseFloat(input.baselineNDI);
+  const pcs = parseFloat(input.sf36PCS);
+  const mcs = parseFloat(input.sf36MCS);
 
-// -----------------
-// Local rule engine
-// -----------------
-function computeLocalRecommendation(input: Required<InputState>): SingleResult {
-  const age = Number(input.age);
-  const dur = Number(input.symptomDurationMonths);
-  const mJOA = Number(input.baselineMJOA);
-  const levels = Number(input.levelsOperated);
-  const ndi = Number(input.baselineNDI);
-
-  const severity: Severity = deriveSeverity(mJOA);
-
-  let baseRisk = 10;
-  let baseBenefit = 10;
-
-  // severity
-  if (severity === "mild") {
-    baseRisk += 10;
-    baseBenefit += 25;
-  } else if (severity === "moderate") {
-    baseRisk += 30;
-    baseBenefit += 45;
-  } else {
-    baseRisk += 55;
-    baseBenefit += 55;
+  if (
+    Number.isNaN(ageNum) ||
+    ageNum < 18 ||
+    ageNum > 95 ||
+    Number.isNaN(symDur) ||
+    symDur < 0 ||
+    symDur > 240 ||
+    Number.isNaN(mjoaNum) ||
+    mjoaNum < 0 ||
+    mjoaNum > 18 ||
+    Number.isNaN(levels) ||
+    levels < 1 ||
+    levels > 8 ||
+    Number.isNaN(ndi) ||
+    ndi < 0 ||
+    ndi > 100 ||
+    Number.isNaN(pcs) ||
+    pcs < 10 ||
+    pcs > 80 ||
+    Number.isNaN(mcs) ||
+    mcs < 10 ||
+    mcs > 80 ||
+    !input.sex ||
+    !input.canalRatio ||
+    !input.t2Signal
+  ) {
+    return { error: "Please complete all fields within allowed ranges." };
   }
 
-  // duration
-  if (dur >= 24) {
-    baseRisk += 10;
-  } else if (dur >= 6) {
-    baseRisk += 5;
-  }
+  const severity: Severity =
+    input.severityOverride || deriveSeverity(mjoaNum) || "moderate";
 
-  // imaging
-  if (input.t2Signal === "focal") baseRisk += 5;
-  if (input.t2Signal === "multilevel") baseRisk += 10;
-  if (input.canalRatio === "50–60%") baseRisk += 5;
-  if (input.canalRatio === ">60%") baseRisk += 10;
-  if (input.opll === "1") baseRisk += 5;
-  if (input.t1Hypo === "1") baseRisk += 5;
+  // ---- Risk model (heuristic / prototype) ----
+  let riskScore = 0;
 
-  // clinical risk markers
-  if (input.gaitImpairment === "1") baseRisk += 5;
-  if (age >= 70) baseRisk += 5;
+  // Base by severity
+  if (severity === "severe") riskScore += 55;
+  else if (severity === "moderate") riskScore += 35;
+  else riskScore += 20;
 
-  // expected benefit knobs
-  if (mJOA <= 14) baseBenefit += 10;
-  if (ndi >= 30) baseBenefit += 5;
-  if (age <= 75) baseBenefit += 5;
+  // Duration
+  if (symDur >= 24 && symDur < 60) riskScore += 5;
+  else if (symDur >= 60) riskScore += 10;
 
-  const riskScore = Math.max(0, Math.min(100, baseRisk));
-  const benefitScore = Math.max(0, Math.min(100, baseBenefit));
+  // Canal compromise
+  if (input.canalRatio === "50–60%") riskScore += 5;
+  else if (input.canalRatio === ">60%") riskScore += 10;
+
+  // Cord signal change
+  if (input.t2Signal === "focal") riskScore += 5;
+  else if (input.t2Signal === "multilevel") riskScore += 10;
+
+  if (input.t1Hypo === "1") riskScore += 5;
+  if (input.opll === "1") riskScore += 5;
+  if (input.gaitImpairment === "1") riskScore += 5;
+
+  // Psych disorder slightly increases risk of poor spontaneous recovery
+  if (input.psychDisorder === "1") riskScore += 3;
+
+  // Age
+  if (ageNum >= 70) riskScore += 5;
+  else if (ageNum <= 40) riskScore -= 3;
+
+  // Clamp between 5 and 100
+  riskScore = clampNumber(riskScore, 5, 100);
+
+  // ---- Benefit model ----
+  let benefitScore = 0;
+
+  if (severity === "severe") benefitScore += 45;
+  else if (severity === "moderate") benefitScore += 35;
+  else benefitScore += 20;
+
+  // Imaging factors that suggest more reversible compression
+  if (input.canalRatio === "50–60%") benefitScore += 5;
+  else if (input.canalRatio === ">60%") benefitScore += 7;
+
+  if (input.t2Signal === "focal") benefitScore += 5;
+  else if (input.t2Signal === "multilevel") benefitScore += 3;
+
+  if (input.opll === "1") benefitScore -= 3;
+
+  // Gait impairment often has room to improve if decompressed
+  if (input.gaitImpairment === "1") benefitScore += 5;
+
+  // Age and baseline function
+  if (ageNum <= 60) benefitScore += 5;
+  if (pcs >= 30 && pcs <= 50) benefitScore += 5;
+  if (ndi >= 20 && ndi <= 60) benefitScore += 5;
+
+  // Very high symptom duration may reduce improvement
+  if (symDur >= 120) benefitScore -= 5;
+
+  benefitScore = clampNumber(benefitScore, 5, 100);
 
   const riskText =
     riskScore >= 70
@@ -162,140 +201,138 @@ function computeLocalRecommendation(input: Required<InputState>): SingleResult {
     severity === "mild" &&
     (input.t2Signal === "multilevel" ||
       input.canalRatio === ">60%" ||
-      input.gaitImpairment === "1")
+      (riskScore >= 40 && benefitScore >= 40))
   ) {
     surgeryRecommended = true;
     recommendationLabel = "Consider surgery";
+  } else {
+    recommendationLabel = "Non-operative trial reasonable";
   }
 
-  // approach probabilities
-  let approach: ApproachProbs = {
-    anterior: 0.33,
-    posterior: 0.34,
-    circumferential: 0.33,
-  };
+  // ---- Approach distribution ----
+  const levelsNum = levels;
+  const hasOPLL = input.opll === "1";
+  const multilevelSignal = input.t2Signal === "multilevel";
 
-  if (input.t2Signal === "multilevel" || levels >= 3 || input.opll === "1") {
-    approach = { anterior: 0.2, posterior: 0.6, circumferential: 0.2 };
-  } else if (input.t2Signal === "focal" && (input.canalRatio === ">60%" || levels <= 2)) {
-    approach = { anterior: 0.55, posterior: 0.25, circumferential: 0.2 };
-  } else if (severity === "severe" && levels >= 3 && input.canalRatio === ">60%") {
-    approach = { anterior: 0.25, posterior: 0.45, circumferential: 0.3 };
+  let anterior = 0.33;
+  let posterior = 0.5;
+  let circumferential = 0.17;
+
+  if (levelsNum <= 2 && !hasOPLL && !multilevelSignal) {
+    anterior = 0.55;
+    posterior = 0.35;
+    circumferential = 0.1;
+  } else if (levelsNum >= 4 || multilevelSignal || hasOPLL) {
+    posterior = 0.55;
+    anterior = 0.2;
+    circumferential = 0.25;
+  } else if (levelsNum === 3) {
+    anterior = 0.35;
+    posterior = 0.45;
+    circumferential = 0.2;
   }
 
-  const vals: [ApproachKey, number][] = [
-    ["anterior", approach.anterior],
-    ["posterior", approach.posterior],
-    ["circumferential", approach.circumferential],
-  ];
+  // Normalize
+  const total = anterior + posterior + circumferential;
+  anterior /= total;
+  posterior /= total;
+  circumferential /= total;
 
-  const sum = vals.reduce((s, [, v]) => s + v, 0) || 1;
-  const norm: ApproachProbs = {
-    anterior: approach.anterior / sum,
-    posterior: approach.posterior / sum,
-    circumferential: approach.circumferential / sum,
-  };
+  const approachProbs = { anterior, posterior, circumferential };
 
-  const sorted = [...(Object.entries(norm) as [ApproachKey, number][])].sort(
-    (a, b) => b[1] - a[1]
-  );
-  const best = sorted[0][0];
-  const bestP = sorted[0][1];
-  const secondP = sorted[1][1];
+  let bestApproach: ApproachKey = "posterior";
+  let bestProb = approachProbs[bestApproach];
 
-  const diff = bestP - secondP;
-  const uncertainty: UncertaintyLevel =
-    diff >= 0.15 ? "low" : diff >= 0.05 ? "moderate" : "high";
+  (["anterior", "posterior", "circumferential"] as ApproachKey[]).forEach((k) => {
+    if (approachProbs[k] > bestProb) {
+      bestProb = approachProbs[k];
+      bestApproach = k;
+    }
+  });
+
+  // Uncertainty: how close are we?
+  const sorted = Object.values(approachProbs).sort((a, b) => b - a);
+  const diff = sorted[0] - sorted[1];
+  let uncertainty: "low" | "moderate" | "high" = "low";
+  if (diff < 0.1) uncertainty = "high";
+  else if (diff < 0.2) uncertainty = "moderate";
 
   return {
-    surgeryRecommended,
-    recommendationLabel,
     riskScore,
     riskText,
     benefitScore,
     benefitText,
-    approachProbs: norm,
-    bestApproach: best,
+    recommendationLabel,
+    bestApproach,
+    approachProbs,
     uncertainty,
   };
 }
 
-// ---- Simple CSV utilities for batch tab ----
-function parseCsvToObjects(csv: string): any[] {
-  const lines = csv
-    .split(/\r?\n/)
-    .map((l) => l.trim())
-    .filter((l) => l.length > 0);
-  if (lines.length < 2) return [];
+// ---------- React page component ----------
+export default function Page() {
+  const [activeTab, setActiveTab] = useState<"single" | "batch">("single");
+  const [inputs, setInputs] = useState<InputState>({
+    age: "",
+    sex: "",
+    smoker: "0",
+    symptomDurationMonths: "",
+    baselineMJOA: "",
+    levelsOperated: "",
+    severityOverride: "",
+    canalRatio: "",
+    t2Signal: "",
+    opll: "0",
+    t1Hypo: "0",
+    gaitImpairment: "0",
+    psychDisorder: "0",
+    baselineNDI: "",
+    sf36PCS: "",
+    sf36MCS: "",
+  });
 
-  const headers = lines[0].split(",").map((h) => h.trim());
-  const rows: any[] = [];
-
-  for (let i = 1; i < lines.length; i++) {
-    const row = lines[i].split(",");
-    if (row.length === 1 && row[0] === "") continue;
-    const obj: any = {};
-    headers.forEach((h, idx) => {
-      obj[h] = (row[idx] ?? "").trim();
-    });
-    rows.push(obj);
-  }
-  return rows;
-}
-
-function mapCsvRowToInput(row: any): InputState {
-  const input: InputState = {
-    age: row.age ?? "",
-    sex: (row.sex as Sex) || "",
-    smoker: row.smoker === "1" ? "1" : "0",
-    symptomDurationMonths: row.symptom_duration_months ?? "",
-    severity: "",
-    baselineMJOA: row.baseline_mJOA ?? "",
-    levelsOperated: row.levels_operated ?? "",
-    canalRatio: (row.canal_occupying_ratio_cat as CanalRatioCat) || "",
-    t2Signal: (row.T2_signal as T2Signal) || "",
-    opll: row.OPLL === "1" ? "1" : "0",
-    t1Hypo: row.T1_hypointensity === "1" ? "1" : "0",
-    gaitImpairment: row.gait_impairment === "1" ? "1" : "0",
-    psychDisorder: row.psych_disorder === "1" ? "1" : "0",
-    baselineNDI: row.baseline_NDI ?? "",
-    sf36PCS: row.baseline_SF36_PCS ?? "",
-    sf36MCS: row.baseline_SF36_MCS ?? "",
-  };
-  return input;
-}
-
-// ---------------
-// React component
-// ---------------
-export default function PrototypePage() {
-  const [tab, setTab] = useState<"single" | "batch">("single");
-  const [inputs, setInputs] = useState<InputState>(initialInputs);
-  const [result, setResult] = useState<SingleResult | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [result, setResult] = useState<ResultState | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   // Batch state
   const [batchCsv, setBatchCsv] = useState("");
-  const [batchResults, setBatchResults] = useState<
-    { input: InputState; result: SingleResult }[] | null
-  >(null);
+  const [batchResults, setBatchResults] = useState<BatchResultRow[] | null>(null);
   const [batchError, setBatchError] = useState<string | null>(null);
   const [batchLoading, setBatchLoading] = useState(false);
 
-  function updateField<K extends keyof InputState>(key: K, value: InputState[K]) {
-    setInputs((prev) => ({ ...prev, [key]: value }));
+  const numericRanges =
+    "Numeric ranges: Age 18–95; mJOA 0–18; planned levels 1–8; NDI 0–100; SF-36 PCS/MCS 10–80; symptom duration 0–240 months.";
+
+  function updateField<K extends keyof InputState>(field: K, value: InputState[K]) {
+    setInputs((prev) => ({ ...prev, [field]: value }));
+    setResult(null);
+    setError(null);
   }
 
-  function handleReset() {
+  const autoSeverity = deriveSeverity(
+    inputs.baselineMJOA ? parseFloat(inputs.baselineMJOA) : null
+  );
+
+  function handleRunSingle() {
+    const res = computeModel(inputs);
+    if ("error" in res) {
+      setError(res.error);
+      setResult(null);
+    } else {
+      setResult(res);
+      setError(null);
+    }
+  }
+
+  function handleResetSingle() {
     setInputs({
       age: "",
       sex: "",
       smoker: "0",
       symptomDurationMonths: "",
-      severity: "",
       baselineMJOA: "",
       levelsOperated: "",
+      severityOverride: "",
       canalRatio: "",
       t2Signal: "",
       opll: "0",
@@ -310,352 +347,43 @@ export default function PrototypePage() {
     setError(null);
   }
 
-  function handlePrintPage() {
-    if (typeof window !== "undefined") {
-      window.print();
-    }
-  }
-
-  async function handleRunSingle() {
-    setError(null);
-
-    const requiredNumeric: (keyof InputState)[] = [
-      "age",
-      "symptomDurationMonths",
-      "baselineMJOA",
-      "levelsOperated",
-      "baselineNDI",
-      "sf36PCS",
-      "sf36MCS",
-    ];
-
-    for (const k of requiredNumeric) {
-      const v = inputs[k];
-      if (v === "" || v === null) {
-        setError("Please fill in all numeric fields before running the recommendation.");
-        return;
-      }
-      const num = Number(v as string);
-      if (Number.isNaN(num) || num < 0) {
-        setError("Numeric fields must be non-negative numbers.");
-        return;
-      }
-
-      // Range validation for clinically plausible values
-      switch (k) {
-        case "age":
-          if (num < 18 || num > 95) {
-            setError("Age must be between 18 and 95 years.");
-            return;
-          }
-          break;
-        case "baselineMJOA":
-          if (num < 0 || num > 18) {
-            setError("Baseline mJOA must be between 0 and 18.");
-            return;
-          }
-          break;
-        case "levelsOperated":
-          if (num < 1 || num > 8) {
-            setError("Planned operated levels must be between 1 and 8.");
-            return;
-          }
-          break;
-        case "baselineNDI":
-          if (num < 0 || num > 100) {
-            setError("NDI should be between 0 and 100.");
-            return;
-          }
-          break;
-        case "sf36PCS":
-        case "sf36MCS":
-          if (num < 10 || num > 80) {
-            setError("SF-36 PCS and MCS should be between 10 and 80.");
-            return;
-          }
-          break;
-        case "symptomDurationMonths":
-          if (num < 0 || num > 240) {
-            setError("Symptom duration must be between 0 and 240 months.");
-            return;
-          }
-          break;
-      }
-    }
-
-    if (!inputs.sex || !inputs.canalRatio || !inputs.t2Signal) {
-      setError("Please select sex, canal occupying ratio, and T2 cord signal.");
-      return;
-    }
-
-    const mjoaNum = Number(inputs.baselineMJOA);
-    const derivedSeverity = deriveSeverity(mjoaNum);
-
-    setLoading(true);
-    try {
-      const apiBase = process.env.NEXT_PUBLIC_DCM_API_URL;
-
-      if (apiBase) {
-        // API path
-        const payload = {
-          age: Number(inputs.age),
-          sex: inputs.sex,
-          smoker: Number(inputs.smoker),
-          symptom_duration_months: Number(inputs.symptomDurationMonths),
-          severity: derivedSeverity,
-          baseline_mJOA: Number(inputs.baselineMJOA),
-          levels_operated: Number(inputs.levelsOperated),
-          OPLL: Number(inputs.opll),
-          canal_occupying_ratio_cat: inputs.canalRatio,
-          T2_signal: inputs.t2Signal,
-          T1_hypointensity: Number(inputs.t1Hypo),
-          gait_impairment: Number(inputs.gaitImpairment),
-          psych_disorder: Number(inputs.psychDisorder),
-          baseline_NDI: Number(inputs.baselineNDI),
-          baseline_SF36_PCS: Number(inputs.sf36PCS),
-          baseline_SF36_MCS: Number(inputs.sf36MCS),
-        };
-
-        const resp = await fetch(`${apiBase}/recommend_single`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
-        });
-
-        if (!resp.ok) {
-          const text = await resp.text();
-          throw new Error(`API error (${resp.status}): ${text}`);
-        }
-
-        const data = await resp.json();
-
-        const mapped: SingleResult = {
-          surgeryRecommended: Boolean(data.surgery_recommended),
-          recommendationLabel: data.recommendation_label ?? "Recommendation",
-          riskScore: data.risk_score ?? 0,
-          riskText:
-            data.risk_text ??
-            "Risk of neurological worsening or failure to improve without surgery.",
-          benefitScore: data.benefit_score ?? 0,
-          benefitText:
-            data.benefit_text ??
-            "Estimated chance of clinically meaningful mJOA improvement with surgery.",
-          approachProbs: {
-            anterior: data.approach_probs?.anterior ?? 0.33,
-            posterior: data.approach_probs?.posterior ?? 0.34,
-            circumferential: data.approach_probs?.circumferential ?? 0.33,
-          },
-          bestApproach: (data.best_approach as ApproachKey) ?? "posterior",
-          uncertainty: (data.uncertainty_level as UncertaintyLevel) ?? "moderate",
-        };
-
-        setResult(mapped);
-      } else {
-        // Local TS logic
-        const localInputs: Required<InputState> = {
-          ...(inputs as InputState),
-          age: inputs.age || "0",
-          symptomDurationMonths: inputs.symptomDurationMonths || "0",
-          baselineMJOA: inputs.baselineMJOA || "0",
-          levelsOperated: inputs.levelsOperated || "0",
-          baselineNDI: inputs.baselineNDI || "0",
-          sf36PCS: inputs.sf36PCS || "0",
-          sf36MCS: inputs.sf36MCS || "0",
-          sex: inputs.sex || "M",
-          severity: derivedSeverity,
-          canalRatio: (inputs.canalRatio || "50–60%") as CanalRatioCat,
-          t2Signal: (inputs.t2Signal || "none") as T2Signal,
-        };
-
-        const res = computeLocalRecommendation(localInputs);
-        setResult(res);
-      }
-    } catch (e: any) {
-      console.error(e);
-      setError(e.message ?? "Failed to generate recommendation.");
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  async function handleRunBatch() {
-    setBatchError(null);
-    setBatchResults(null);
-
-    if (!batchCsv.trim()) {
-      setBatchError("Paste a CSV or upload a file with at least one patient.");
-      return;
-    }
-
-    const rows = parseCsvToObjects(batchCsv);
-    if (!rows.length) {
-      setBatchError("Could not parse any rows. Check CSV format and headers.");
-      return;
-    }
-
-    const results: { input: InputState; result: SingleResult }[] = [];
-    setBatchLoading(true);
-
-    try {
-      for (let idx = 0; idx < rows.length; idx++) {
-        const row = rows[idx];
-        const input = mapCsvRowToInput(row);
-
-        const requiredNumeric: (keyof InputState)[] = [
-          "age",
-          "symptomDurationMonths",
-          "baselineMJOA",
-          "levelsOperated",
-          "baselineNDI",
-          "sf36PCS",
-          "sf36MCS",
-        ];
-
-        for (const k of requiredNumeric) {
-          const v = input[k];
-          const num = Number(v as string);
-          if (v === "" || Number.isNaN(num) || num < 0) {
-            throw new Error(
-              `Row ${idx + 2}: numeric field "${String(
-                k
-              )}" is missing or invalid (must be non-negative).`
-            );
-          }
-
-          // Range validation for clinically plausible values
-          switch (k) {
-            case "age":
-              if (num < 18 || num > 95) {
-                throw new Error(`Row ${idx + 2}: age must be between 18 and 95.`);
-              }
-              break;
-            case "baselineMJOA":
-              if (num < 0 || num > 18) {
-                throw new Error(`Row ${idx + 2}: baseline_mJOA must be between 0 and 18.`);
-              }
-              break;
-            case "levelsOperated":
-              if (num < 1 || num > 8) {
-                throw new Error(
-                  `Row ${idx + 2}: levels_operated must be between 1 and 8.`
-                );
-              }
-              break;
-            case "baselineNDI":
-              if (num < 0 || num > 100) {
-                throw new Error(
-                  `Row ${idx + 2}: baseline_NDI should be between 0 and 100.`
-                );
-              }
-              break;
-            case "sf36PCS":
-            case "sf36MCS":
-              if (num < 10 || num > 80) {
-                throw new Error(
-                  `Row ${idx + 2}: SF-36 PCS and MCS should be between 10 and 80.`
-                );
-              }
-              break;
-            case "symptomDurationMonths":
-              if (num < 0 || num > 240) {
-                throw new Error(
-                  `Row ${idx + 2}: symptom_duration_months must be between 0 and 240.`
-                );
-              }
-              break;
-          }
-        }
-
-        if (!input.sex || !input.canalRatio || !input.t2Signal) {
-          throw new Error(
-            `Row ${idx + 2}: sex, canal_occupying_ratio_cat, and T2_signal are required.`
-          );
-        }
-
-        const mjoaNum = Number(input.baselineMJOA);
-        const derivedSeverity = deriveSeverity(mjoaNum);
-
-        const localInputs: Required<InputState> = {
-          ...input,
-          age: input.age || "0",
-          symptomDurationMonths: input.symptomDurationMonths || "0",
-          baselineMJOA: input.baselineMJOA || "0",
-          levelsOperated: input.levelsOperated || "0",
-          baselineNDI: input.baselineNDI || "0",
-          sf36PCS: input.sf36PCS || "0",
-          sf36MCS: input.sf36MCS || "0",
-          sex: input.sex || "M",
-          severity: derivedSeverity,
-          canalRatio: (input.canalRatio || "50–60%") as CanalRatioCat,
-          t2Signal: (input.t2Signal || "none") as T2Signal,
-        };
-
-        const res = computeLocalRecommendation(localInputs);
-        results.push({ input, result: res });
-      }
-
-      setBatchResults(results);
-    } catch (e: any) {
-      console.error(e);
-      setBatchError(e.message ?? "Failed to process batch CSV.");
-    } finally {
-      setBatchLoading(false);
-    }
-  }
-
-  function handleBatchFileChange(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      setBatchCsv(String(reader.result ?? ""));
-    };
-    reader.readAsText(file);
-  }
-
-  // PDF helpers
-  function handleExportSinglePdf() {
-    if (!result) {
-      setError("Run a single-patient recommendation before exporting a PDF.");
-      return;
-    }
+  function handlePrintSingle() {
+    if (!result) return;
 
     const doc = new jsPDF();
-    const mjoaNum = Number(inputs.baselineMJOA);
-    const sev = Number.isNaN(mjoaNum) ? "-" : deriveSeverity(mjoaNum);
 
-    doc.setFontSize(14);
-    doc.text("DCM Surgical Decision Support – Single Patient Summary", 10, 15);
+    doc.setFontSize(16);
+    doc.text("Degenerative Cervical Myelopathy Decision-Support Summary", 10, 15);
+
+    doc.setFontSize(12);
+    doc.text("Single-patient output", 10, 23);
 
     doc.setFontSize(10);
     doc.text(
-      `Age: ${inputs.age || "NA"}   Sex: ${inputs.sex || "NA"}   Smoker: ${
-        inputs.smoker === "1" ? "Current" : "Non-smoker / former"
+      `Inputs – Age: ${inputs.age}, Sex: ${inputs.sex || "N/A"}, Symptom duration: ${
+        inputs.symptomDurationMonths
+      } months, mJOA: ${inputs.baselineMJOA}, Planned levels: ${
+        inputs.levelsOperated
+      }, Canal occupying ratio: ${inputs.canalRatio || "N/A"}, T2 signal: ${
+        inputs.t2Signal || "N/A"
+      }, OPLL: ${inputs.opll === "1" ? "Yes" : "No"}, T1 hypointensity: ${
+        inputs.t1Hypo === "1" ? "Yes" : "No"
+      }, Gait impairment: ${
+        inputs.gaitImpairment === "1" ? "Yes" : "No"
+      }, Psychiatric disorder: ${
+        inputs.psychDisorder === "1" ? "Yes" : "No"
+      }, NDI: ${inputs.baselineNDI}, SF-36 PCS: ${inputs.sf36PCS}, SF-36 MCS: ${
+        inputs.sf36MCS
       }`,
       10,
-      25
-    );
-    doc.text(
-      `mJOA: ${inputs.baselineMJOA || "NA"}   mJOA-based severity: ${sev}`,
-      10,
-      31
-    );
-    doc.text(
-      `Duration (months): ${inputs.symptomDurationMonths || "NA"}   Planned levels: ${
-        inputs.levelsOperated || "NA"
-      }`,
-      10,
-      37
-    );
-    doc.text(
-      `Canal ratio: ${inputs.canalRatio || "NA"}   T2 signal: ${
-        inputs.t2Signal || "NA"
-      }   OPLL: ${inputs.opll === "1" ? "Yes" : "No"}`,
-      10,
-      43
+      33,
+      { maxWidth: 190 }
     );
 
     doc.setFontSize(12);
+    doc.text("Modeled risk and benefit", 10, 45);
+
+    doc.setFontSize(10);
     doc.text(`Recommendation: ${result.recommendationLabel}`, 10, 53);
 
     doc.setFontSize(10);
@@ -680,157 +408,427 @@ export default function PrototypePage() {
         ap.anterior * 100
       )}%, Posterior: ${Math.round(ap.posterior * 100)}%, Circumferential: ${Math.round(
         ap.circumferential * 100
-      )}% (best: ${result.bestApproach})`,
+      )}%`,
       10,
       79
     );
+    doc.text(`Best approach: ${result.bestApproach}`, 10, 87);
+    doc.text(`Uncertainty label: ${result.uncertainty}`, 10, 95);
 
-    doc.save("dcm_single_summary.pdf");
-  }
-
-  function handleExportBatchPdf() {
-    if (!batchResults || batchResults.length === 0) {
-      setBatchError("Run a batch recommendation before exporting a PDF.");
-      return;
-    }
-
-    const doc = new jsPDF();
-    doc.setFontSize(14);
-    doc.text("DCM Surgical Decision Support – Batch Summary", 10, 15);
-
-    const total = batchResults.length;
-
-    const nSurgOnly = batchResults.filter(
-      (r) => r.result.recommendationLabel === "Surgery recommended"
-    ).length;
-    const nConsider = batchResults.filter(
-      (r) => r.result.recommendationLabel === "Consider surgery"
-    ).length;
-    const nNonOp = batchResults.filter(
-      (r) => r.result.recommendationLabel === "Non-operative trial reasonable"
-    ).length;
-
-    const approachCounts: Record<ApproachKey, number> = {
-      anterior: 0,
-      posterior: 0,
-      circumferential: 0,
-    };
-    batchResults.forEach((r) => {
-      if (r.result.bestApproach !== "none") {
-        approachCounts[r.result.bestApproach as ApproachKey]++;
-      }
-    });
-
-    doc.setFontSize(10);
-    doc.text(`Total patients: ${total}`, 10, 25);
-    doc.text(`Surgery recommended: ${nSurgOnly}`, 10, 31);
-    doc.text(`Consider surgery: ${nConsider}`, 10, 37);
-    doc.text(`Non-operative trial reasonable: ${nNonOp}`, 10, 43);
+    doc.setFontSize(9);
     doc.text(
-      `Best approach – Anterior: ${approachCounts.anterior}, Posterior: ${approachCounts.posterior}, Circumferential: ${approachCounts.circumferential}`,
+      "Important caveats: This prototype is based on patterns in published cohorts and synthetic data.",
       10,
-      49
+      110,
+      { maxWidth: 190 }
+    );
+    doc.text(
+      "It does not account for all factors (frailty, alignment, prior surgery, specific comorbidities) and should not be used as a stand-alone gatekeeper.",
+      10,
+      116,
+      { maxWidth: 190 }
+    );
+    doc.text(
+      "Final decisions should integrate clinical examination, full imaging review, and multidisciplinary input where appropriate.",
+      10,
+      122,
+      { maxWidth: 190 }
     );
 
-    let y = 61;
-    doc.setFontSize(9);
-    doc.text("Per-patient snapshot (index, age, mJOA, recommendation, best approach)", 10, y);
-    y += 6;
+    doc.save("dcm_single_patient_summary.pdf");
+  }
 
-    batchResults.forEach((row, idx) => {
-      const line = `${idx + 1}) Age ${row.input.age || "NA"}, mJOA ${
-        row.input.baselineMJOA || "NA"
-      }, rec: ${row.result.recommendationLabel}, best: ${
-        row.result.bestApproach
-      }`;
-      doc.text(line, 10, y);
-      y += 5;
-      if (y > 280) {
-        doc.addPage();
-        y = 15;
+  function parseBatchCsv(text: string): {
+    rows: InputState[];
+    errors: string | null;
+  } {
+    const lines = text
+      .split("\n")
+      .map((l) => l.trim())
+      .filter((l) => l.length > 0);
+
+    if (lines.length === 0) {
+      return { rows: [], errors: "No data found." };
+    }
+
+    const headerLine = lines[0];
+    const headerExpected =
+      "age,sex,smoker,symptom_duration_months,severity,baseline_mJOA,levels_operated,canal_occupying_ratio_cat,T2_signal,OPLL,T1_hypointensity,gait_impairment,psych_disorder,baseline_NDI,baseline_SF36_PCS,baseline_SF36_MCS";
+
+    const headerNorm = headerLine.replace(/\s+/g, "").toLowerCase();
+    const expectedNorm = headerExpected.replace(/\s+/g, "").toLowerCase();
+
+    if (!headerNorm.startsWith(expectedNorm)) {
+      return {
+        rows: [],
+        errors:
+          "Header mismatch. Expected: " +
+          headerExpected +
+          ". Please paste data with this exact header.",
+      };
+    }
+
+    const dataLines = lines.slice(1);
+    const rows: InputState[] = [];
+
+    dataLines.forEach((line, index) => {
+      const cols = line.split(",").map((c) => c.trim());
+
+      if (cols.length < 16) {
+        return;
       }
+
+      const [
+        age,
+        sex,
+        smoker,
+        symptomDurationMonths,
+        severityStr,
+        baselineMJOA,
+        levelsOperated,
+        canalRatioRaw,
+        t2SignalRaw,
+        opll,
+        t1Hypo,
+        gaitImpairment,
+        psychDisorder,
+        baselineNDI,
+        sf36PCS,
+        sf36MCS,
+      ] = cols;
+
+      const canalNormalized = canalRatioRaw.replace(" ", "");
+      let canalRatio: CanalRatioCat | "" = "";
+      if (canalNormalized === "<50%" || canalNormalized === "<50%") {
+        canalRatio = "<50%";
+      } else if (
+        canalNormalized === "50–60%" ||
+        canalNormalized === "50-60%" ||
+        canalNormalized === "50–60" ||
+        canalNormalized === "50-60"
+      ) {
+        canalRatio = "50–60%";
+      } else if (
+        canalNormalized === ">60%" ||
+        canalNormalized === ">60% " ||
+        canalNormalized === ">60"
+      ) {
+        canalRatio = ">60%";
+      }
+
+      let t2Signal: T2Signal | "" = "";
+      const t2Lower = t2SignalRaw.toLowerCase();
+      if (t2Lower.startsWith("none")) t2Signal = "none";
+      else if (t2Lower.startsWith("focal")) t2Signal = "focal";
+      else if (t2Lower.startsWith("multi")) t2Signal = "multilevel";
+
+      let severityOverride: Severity | "" = "";
+      const sevLower = severityStr.toLowerCase();
+      if (sevLower.startsWith("mild")) severityOverride = "mild";
+      else if (sevLower.startsWith("moderate")) severityOverride = "moderate";
+      else if (sevLower.startsWith("severe")) severityOverride = "severe";
+
+      rows.push({
+        age,
+        sex: sex === "M" || sex === "F" ? sex : "",
+        smoker: smoker === "1" ? "1" : "0",
+        symptomDurationMonths,
+        baselineMJOA,
+        levelsOperated,
+        severityOverride,
+        canalRatio,
+        t2Signal,
+        opll: opll === "1" ? "1" : "0",
+        t1Hypo: t1Hypo === "1" ? "1" : "0",
+        gaitImpairment: gaitImpairment === "1" ? "1" : "0",
+        psychDisorder: psychDisorder === "1" ? "1" : "0",
+        baselineNDI,
+        sf36PCS,
+        sf36MCS,
+      });
+    });
+
+    if (rows.length === 0) {
+      return { rows: [], errors: "No valid data rows found after the header." };
+    }
+
+    return { rows, errors: null };
+  }
+
+  function handleRunBatch() {
+    setBatchError(null);
+    setBatchResults(null);
+    setBatchLoading(true);
+
+    try {
+      const { rows, errors } = parseBatchCsv(batchCsv);
+      if (errors) {
+        setBatchError(errors);
+        setBatchLoading(false);
+        return;
+      }
+
+      const results: BatchResultRow[] = rows.map((row, index) => {
+        const ageNum = parseFloat(row.age);
+        const mjoaNum = parseFloat(row.baselineMJOA);
+        const severity = row.severityOverride || deriveSeverity(mjoaNum);
+
+        if (
+          Number.isNaN(ageNum) ||
+          ageNum < 18 ||
+          ageNum > 95 ||
+          Number.isNaN(mjoaNum) ||
+          mjoaNum < 0 ||
+          mjoaNum > 18
+        ) {
+          return {
+            index: index + 1,
+            age: Number.isNaN(ageNum) ? null : ageNum,
+            baselineMJOA: Number.isNaN(mjoaNum) ? null : mjoaNum,
+            severity: severity || "",
+            riskScore: null,
+            benefitScore: null,
+            recommendationLabel: "Invalid input",
+            bestApproach: "",
+            error: "Age or mJOA out of range.",
+          };
+        }
+
+        const res = computeModel(row);
+
+        if ("error" in res) {
+          return {
+            index: index + 1,
+            age: ageNum,
+            baselineMJOA: mjoaNum,
+            severity: severity || "",
+            riskScore: null,
+            benefitScore: null,
+            recommendationLabel: "Invalid row",
+            bestApproach: "",
+            error: res.error,
+          };
+        }
+
+        return {
+          index: index + 1,
+          age: ageNum,
+          baselineMJOA: mjoaNum,
+          severity: severity || "",
+          riskScore: res.riskScore,
+          benefitScore: res.benefitScore,
+          recommendationLabel: res.recommendationLabel,
+          bestApproach: res.bestApproach,
+        };
+      });
+
+      setBatchResults(results);
+    } catch (e: any) {
+      setBatchError("Unable to parse CSV. Please check formatting.");
+    } finally {
+      setBatchLoading(false);
+    }
+  }
+
+  function handlePrintBatchSummary() {
+    if (!batchResults || batchResults.length === 0) return;
+
+    const doc = new jsPDF({ orientation: "landscape" });
+
+    doc.setFontSize(14);
+    doc.text("Degenerative Cervical Myelopathy – Batch Summary", 10, 15);
+
+    doc.setFontSize(10);
+    doc.text(
+      "This summary lists modeled risk, benefit, and recommended approach for each row.",
+      10,
+      22
+    );
+
+    const headers = [
+      "Row",
+      "Age",
+      "mJOA",
+      "Severity",
+      "Risk w/o surgery",
+      "Benefit w/ surgery",
+      "Recommendation",
+      "Best approach",
+    ];
+
+    const colWidths = [10, 12, 12, 20, 30, 30, 55, 25];
+    const startX = 10;
+    let y = 30;
+
+    doc.setFontSize(9);
+    let x = startX;
+    headers.forEach((h, idx) => {
+      doc.text(h, x, y);
+      x += colWidths[idx];
+    });
+
+    y += 6;
+    doc.setFontSize(8);
+
+    batchResults.forEach((row) => {
+      if (y > 190) {
+        doc.addPage();
+        y = 20;
+      }
+      let xRow = startX;
+      const cells = [
+        row.index.toString(),
+        row.age != null ? row.age.toString() : "-",
+        row.baselineMJOA != null ? row.baselineMJOA.toString() : "-",
+        row.severity ? row.severity : "-",
+        row.riskScore != null ? `${row.riskScore.toFixed(0)}%` : "-",
+        row.benefitScore != null ? `${row.benefitScore.toFixed(0)}%` : "-",
+        row.recommendationLabel,
+        row.bestApproach || "-",
+      ];
+
+      cells.forEach((c, idx) => {
+        doc.text(c, xRow, y, { maxWidth: colWidths[idx] - 2 });
+        xRow += colWidths[idx];
+      });
+
+      y += 5;
     });
 
     doc.save("dcm_batch_summary.pdf");
   }
 
-  function formatPct(p: number): string {
-    return `${Math.round(clamp01(p) * 100)}%`;
+  function handlePrintBatchView() {
+    if (!batchResults || batchResults.length === 0) return;
+
+    const doc = new jsPDF({ orientation: "portrait" });
+
+    doc.setFontSize(14);
+    doc.text("Degenerative Cervical Myelopathy – Batch Recommendations", 10, 15);
+
+    doc.setFontSize(10);
+    doc.text(
+      "Per-patient modeled risk, benefit, and recommended approach.",
+      10,
+      22
+    );
+
+    const headers = [
+      "Row",
+      "Age",
+      "mJOA",
+      "Severity",
+      "Risk w/o surgery",
+      "Benefit w/ surgery",
+      "Recommendation",
+      "Best approach",
+    ];
+    const colWidths = [10, 12, 12, 20, 30, 30, 55, 25];
+
+    const startX = 10;
+    let y = 30;
+
+    doc.setFontSize(9);
+    let x = startX;
+    headers.forEach((h, idx) => {
+      doc.text(h, x, y);
+      x += colWidths[idx];
+    });
+
+    y += 6;
+    doc.setFontSize(8);
+
+    batchResults.forEach((row) => {
+      if (y > 270) {
+        doc.addPage();
+        y = 20;
+      }
+      let xRow = startX;
+      const cells = [
+        row.index.toString(),
+        row.age != null ? row.age.toString() : "-",
+        row.baselineMJOA != null ? row.baselineMJOA.toString() : "-",
+        row.severity ? row.severity : "-",
+        row.riskScore != null ? `${row.riskScore.toFixed(0)}%` : "-",
+        row.benefitScore != null ? `${row.benefitScore.toFixed(0)}%` : "-",
+        row.recommendationLabel,
+        row.bestApproach || "-",
+      ];
+
+      cells.forEach((c, idx) => {
+        doc.text(c, xRow, y, { maxWidth: colWidths[idx] - 2 });
+        xRow += colWidths[idx];
+      });
+
+      y += 5;
+    });
+
+    doc.save("dcm_batch_detailed_view.pdf");
   }
 
-  const mjoaNum = Number(inputs.baselineMJOA);
-  const autoSeverity = Number.isNaN(mjoaNum) ? null : deriveSeverity(mjoaNum);
+  function handlePrint() {
+    window.print();
+  }
 
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-900">
-      {/* Header */}
-      <header className="border-b border-slate-200 bg-white">
-        <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-4">
-          <div className="flex items-center gap-4">
-            <img
-              src="/ascension-seton-logo.png"
-              alt="Ascension Texas & Seton"
-              className="h-10 w-auto object-contain"
-            />
+    <div className="min-h-screen bg-slate-50">
+      <header className="border-b bg-white">
+        <div className="mx-auto flex max-w-6xl items-center justify-between px-4 py-3">
+          <div className="flex items-center gap-3">
+            <div className="flex items-center gap-2">
+              <span className="text-lg font-semibold text-slate-900">Ascension</span>
+              <span className="text-lg font-semibold text-slate-900">Seton</span>
+            </div>
           </div>
           <div className="text-right">
-            <div className="text-xl font-semibold">
+            <p className="text-sm font-semibold text-slate-900">
               Ascension Texas Spine and Scoliosis
-            </div>
-            <div className="text-xs text-slate-500">
+            </p>
+            <p className="text-[11px] text-slate-500">
               Degenerative Cervical Myelopathy Decision-Support Tool
-            </div>
+            </p>
           </div>
         </div>
       </header>
 
-      {/* Body */}
-      <main className="mx-auto max-w-6xl px-6 py-8 space-y-6">
-        {/* Tabs */}
-        <div className="inline-flex rounded-full bg-slate-100 p-1 text-sm">
-          <button
-            type="button"
-            onClick={() => setTab("single")}
-            className={`rounded-full px-4 py-2 ${
-              tab === "single"
-                ? "bg-white font-semibold text-emerald-700 shadow-sm"
-                : "text-slate-600"
-            }`}
-          >
-            Single patient
-          </button>
-          <button
-            type="button"
-            onClick={() => setTab("batch")}
-            className={`rounded-full px-4 py-2 ${
-              tab === "batch"
-                ? "bg-white font-semibold text-emerald-700 shadow-sm"
-                : "text-slate-600"
-            }`}
-          >
-            Batch (CSV)
-          </button>
+      <main className="mx-auto max-w-6xl px-4 py-6">
+        <div className="mb-4 flex items-center justify-between">
+          <div className="flex gap-2 rounded-full bg-slate-100 p-1 text-xs">
+            <button
+              type="button"
+              onClick={() => setActiveTab("single")}
+              className={`rounded-full px-3 py-1 ${
+                activeTab === "single"
+                  ? "bg-white text-slate-900 shadow-sm"
+                  : "text-slate-600"
+              }`}
+            >
+              Single patient
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveTab("batch")}
+              className={`rounded-full px-3 py-1 ${
+                activeTab === "batch"
+                  ? "bg-white text-slate-900 shadow-sm"
+                  : "text-slate-600"
+              }`}
+            >
+              Batch (CSV)
+            </button>
+          </div>
+          <p className="hidden text-[11px] text-slate-500 md:block">{numericRanges}</p>
         </div>
 
-        {/* Helper text under tabs */}
-        {tab === "single" ? (
-          <p className="text-xs text-slate-500">
-            Numeric ranges: Age 18–95; mJOA 0–18; planned levels 1–8; NDI 0–100; SF-36 PCS/MCS 10–80; symptom duration 0–240 months.
-          </p>
-        ) : (
-          <p className="text-xs text-slate-500">
-            Batch CSV should respect the same ranges (Age 18–95; mJOA 0–18; levels 1–8; NDI 0–100; SF-36 PCS/MCS 10–80; symptom duration 0–240). See header below for required columns.
-          </p>
-        )}
+        <p className="mb-3 text-[11px] text-slate-500 md:hidden">{numericRanges}</p>
 
-        {tab === "single" ? (
+        {activeTab === "single" ? (
           <>
-            {/* Grid: left inputs, right explanatory panel (Figure 1-style) */}
-            <div className="grid gap-6 md:grid-cols-[minmax(0,2fr)_minmax(0,1.4fr)]">
-              {/* Left: inputs */}
+            <div className="mb-6 grid gap-4 md:grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)]">
+              {/* Left column – patient inputs */}
               <section className="rounded-2xl bg-white p-6 shadow-sm">
                 <h2 className="mb-4 text-lg font-semibold text-slate-900">
-                  1. Patient inputs
+                  Patient profile & imaging features
                 </h2>
 
                 <div className="grid gap-4 md:grid-cols-2">
@@ -856,7 +854,9 @@ export default function PrototypePage() {
                     </label>
                     <select
                       value={inputs.sex}
-                      onChange={(e) => updateField("sex", e.target.value as Sex)}
+                      onChange={(e) =>
+                        updateField("sex", e.target.value === "M" || e.target.value === "F" ? e.target.value : "")
+                      }
                       className="w-full rounded-lg border border-slate-200 px-3 py-1.5 text-sm"
                     >
                       <option value="">Select</option>
@@ -865,7 +865,7 @@ export default function PrototypePage() {
                     </select>
                   </div>
 
-                  {/* Smoker */}
+                  {/* Smoking status */}
                   <div>
                     <label className="mb-1 block text-xs font-semibold text-slate-700">
                       Smoking status
@@ -890,9 +890,7 @@ export default function PrototypePage() {
                       min={0}
                       max={240}
                       value={inputs.symptomDurationMonths}
-                      onChange={(e) =>
-                        updateField("symptomDurationMonths", e.target.value)
-                      }
+                      onChange={(e) => updateField("symptomDurationMonths", e.target.value)}
                       className="w-full rounded-lg border border-slate-200 px-3 py-1.5 text-sm"
                     />
                   </div>
@@ -900,7 +898,7 @@ export default function PrototypePage() {
                   {/* Baseline mJOA */}
                   <div>
                     <label className="mb-1 block text-xs font-semibold text-slate-700">
-                      mJOA (0–18)
+                      Baseline mJOA (0–18)
                     </label>
                     <input
                       type="number"
@@ -913,7 +911,21 @@ export default function PrototypePage() {
                     {autoSeverity && (
                       <p className="mt-1 text-[11px] text-slate-500">
                         mJOA-based severity (auto):{" "}
-                        <span className="font-semibold capitalize">{autoSeverity}</span>
+                        <span
+                          className={`inline-flex items-center rounded-full px-2 py-[1px] text-[10px] font-semibold ${
+                            autoSeverity === "mild"
+                              ? "bg-emerald-100 text-emerald-700"
+                              : autoSeverity === "moderate"
+                              ? "bg-amber-100 text-amber-700"
+                              : "bg-rose-100 text-rose-700"
+                          }`}
+                        >
+                          {autoSeverity === "mild"
+                            ? "Mild"
+                            : autoSeverity === "moderate"
+                            ? "Moderate"
+                            : "Severe"}
+                        </span>
                       </p>
                     )}
                   </div>
@@ -936,38 +948,44 @@ export default function PrototypePage() {
                   {/* Canal occupying ratio */}
                   <div>
                     <label className="mb-1 block text-xs font-semibold text-slate-700">
-                      Canal occupying ratio
+                      Maximum canal occupying ratio
                     </label>
                     <select
                       value={inputs.canalRatio}
                       onChange={(e) =>
-                        updateField("canalRatio", e.target.value as CanalRatioCat)
+                        updateField(
+                          "canalRatio",
+                          e.target.value as "<50%" | "50–60%" | ">60%" | ""
+                        )
                       }
                       className="w-full rounded-lg border border-slate-200 px-3 py-1.5 text-sm"
                     >
                       <option value="">Select</option>
-                      <option value="<50%">&lt; 50%</option>
+                      <option value="<50%">&lt;50%</option>
                       <option value="50–60%">50–60%</option>
-                      <option value=">60%">&gt; 60%</option>
+                      <option value=">60%">&gt;60%</option>
                     </select>
                   </div>
 
-                  {/* T2 cord signal */}
+                  {/* T2 signal */}
                   <div>
                     <label className="mb-1 block text-xs font-semibold text-slate-700">
-                      T2 cord signal
+                      T2 cord signal change
                     </label>
                     <select
                       value={inputs.t2Signal}
                       onChange={(e) =>
-                        updateField("t2Signal", e.target.value as T2Signal)
+                        updateField(
+                          "t2Signal",
+                          e.target.value as "none" | "focal" | "multilevel" | ""
+                        )
                       }
                       className="w-full rounded-lg border border-slate-200 px-3 py-1.5 text-sm"
                     >
                       <option value="">Select</option>
                       <option value="none">None</option>
                       <option value="focal">Focal</option>
-                      <option value="multilevel">Multilevel / extensive</option>
+                      <option value="multilevel">Multilevel</option>
                     </select>
                   </div>
 
@@ -989,7 +1007,7 @@ export default function PrototypePage() {
                   {/* T1 hypointensity */}
                   <div>
                     <label className="mb-1 block text-xs font-semibold text-slate-700">
-                      T1 hypointensity
+                      T1 cord hypointensity
                     </label>
                     <select
                       value={inputs.t1Hypo}
@@ -1004,7 +1022,7 @@ export default function PrototypePage() {
                   {/* Gait impairment */}
                   <div>
                     <label className="mb-1 block text-xs font-semibold text-slate-700">
-                      Gait impairment
+                      Clinically evident gait impairment
                     </label>
                     <select
                       value={inputs.gaitImpairment}
@@ -1013,7 +1031,7 @@ export default function PrototypePage() {
                       }
                       className="w-full rounded-lg border border-slate-200 px-3 py-1.5 text-sm"
                     >
-                      <option value="0">No / minimal</option>
+                      <option value="0">No</option>
                       <option value="1">Yes</option>
                     </select>
                   </div>
@@ -1021,7 +1039,7 @@ export default function PrototypePage() {
                   {/* Psych disorder */}
                   <div>
                     <label className="mb-1 block text-xs font-semibold text-slate-700">
-                      Psychiatric disorder
+                      Significant mood / anxiety disorder
                     </label>
                     <select
                       value={inputs.psychDisorder}
@@ -1035,7 +1053,7 @@ export default function PrototypePage() {
                     </select>
                   </div>
 
-                  {/* NDI */}
+                  {/* Baseline NDI */}
                   <div>
                     <label className="mb-1 block text-xs font-semibold text-slate-700">
                       Baseline NDI (0–100)
@@ -1053,7 +1071,7 @@ export default function PrototypePage() {
                   {/* SF-36 PCS */}
                   <div>
                     <label className="mb-1 block text-xs font-semibold text-slate-700">
-                      SF-36 PCS (10–80)
+                      Baseline SF-36 PCS (10–80)
                     </label>
                     <input
                       type="number"
@@ -1068,7 +1086,7 @@ export default function PrototypePage() {
                   {/* SF-36 MCS */}
                   <div>
                     <label className="mb-1 block text-xs font-semibold text-slate-700">
-                      SF-36 MCS (10–80)
+                      Baseline SF-36 MCS (10–80)
                     </label>
                     <input
                       type="number"
@@ -1081,271 +1099,244 @@ export default function PrototypePage() {
                   </div>
                 </div>
 
-                {/* Buttons */}
-                <div className="mt-6 flex flex-wrap gap-3">
+                <div className="mt-4 flex flex-wrap items-center gap-3">
                   <button
                     type="button"
                     onClick={handleRunSingle}
-                    disabled={loading}
-                    className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-700 disabled:opacity-60"
+                    className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-700"
                   >
-                    {loading ? "Running..." : "Run recommendation"}
+                    Run recommendation
                   </button>
                   <button
                     type="button"
-                    onClick={handleReset}
-                    className="rounded-lg border border-slate-300 px-4 py-2 text-sm text-slate-700 hover:bg-slate-50"
+                    onClick={handleResetSingle}
+                    className="rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-700 hover:bg-slate-50"
                   >
                     Reset
                   </button>
                   <button
                     type="button"
-                    onClick={handleExportSinglePdf}
-                    className="rounded-lg border border-emerald-500 px-4 py-2 text-sm text-emerald-700 hover:bg-emerald-50"
+                    onClick={handlePrintSingle}
+                    className="rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-700 hover:bg-slate-50"
                   >
-                    Save summary (PDF)
+                    Save single-patient PDF
                   </button>
                   <button
                     type="button"
-                    onClick={handlePrintPage}
-                    className="rounded-lg border border-slate-300 px-4 py-2 text-sm text-slate-700 hover:bg-slate-50"
+                    onClick={handlePrint}
+                    className="rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-700 hover:bg-slate-50"
                   >
                     Print page
                   </button>
                 </div>
 
                 {error && (
-                  <p className="mt-3 rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-700">
+                  <p className="mt-3 text-sm text-rose-600">
+                    <span className="font-semibold">Input error: </span>
                     {error}
                   </p>
                 )}
               </section>
 
-              {/* Right: explanation column – Figure 1 style (two white cards) */}
-              <section className="space-y-4">
-                <div className="rounded-2xl bg-white p-5 shadow-sm">
-                  <h3 className="mb-2 text-base font-semibold text-emerald-700">
-                    1. Should this patient undergo surgery?
-                  </h3>
-                  <p className="text-sm text-slate-700">
-                    Run a single-patient recommendation to see surgery vs non-operative
-                    probabilities, risk bands, and expected benefit. The model uses
-                    mJOA-based severity, symptom duration, MRI cord signal, canal
-                    compromise, OPLL, gait impairment, and age.
-                  </p>
-                </div>
-
-                <div className="rounded-2xl bg-white p-5 shadow-sm">
-                  <h3 className="mb-2 text-base font-semibold text-sky-700">
-                    2. If surgery is offered, which approach?
-                  </h3>
-                  <p className="text-sm text-slate-700">
-                    The tool compares estimated probabilities of achieving clinically
-                    meaningful mJOA improvement (MCID) with anterior, posterior, and
-                    circumferential procedures. Uncertainty reflects how close these
-                    probabilities are to each other: low = one clear favorite, high =
-                    several similar options, where surgeon preferences, alignment, and
-                    comorbidities may drive the final choice.
-                  </p>
-                </div>
+              {/* Right column – explanatory panel */}
+              <section className="rounded-2xl bg-slate-900 p-6 text-slate-50 shadow-sm">
+                <h2 className="mb-1 text-base font-semibold text-emerald-200">
+                  How to interpret this tool
+                </h2>
+                <p className="mb-3 text-[11px] text-slate-200">
+                  This prototype integrates mJOA-based myelopathy severity with MRI features
+                  (cord compression, T2/T1 signal change, OPLL), gait impairment, and
+                  baseline patient-reported scores (NDI, SF-36 PCS/MCS). It is intended to
+                  structure discussion—not replace clinical judgment or shared decision
+                  making.
+                </p>
+                <h3 className="mt-4 mb-1 text-[11px] font-semibold text-emerald-200">
+                  Risk without surgery
+                </h3>
+                <p className="mb-2 text-[11px] text-slate-200">
+                  The risk estimate summarizes the likelihood of neurological worsening
+                  or failure to improve meaningfully if decompression is not performed,
+                  based on observed combinations of severity, symptom duration, and high-risk
+                  MRI features in published cohorts.
+                </p>
+                <h3 className="mt-3 mb-1 text-[11px] font-semibold text-emerald-200">
+                  Expected chance of meaningful improvement with surgery
+                </h3>
+                <p className="mb-2 text-[11px] text-slate-200">
+                  The improvement estimate reflects the modeled probability of achieving a
+                  clinically important gain in mJOA and functional status. It is generally
+                  higher in patients with at least moderate myelopathy, imaging evidence of
+                  cord compression, and sufficient neurologic reserve.
+                </p>
+                <h3 className="mt-3 mb-1 text-[11px] font-semibold text-emerald-200">
+                  If surgery is offered, which approach?
+                </h3>
+                <p className="mb-2 text-[11px] text-slate-200">
+                  The model distributes probability across anterior, posterior, and
+                  circumferential decompression/fusion strategies based on the number of
+                  levels, canal occupying ratio, T2 signal pattern, and presence of OPLL.
+                  The highlighted “best” approach simply has the highest estimated
+                  probability of achieving meaningful improvement while maintaining an
+                  acceptable risk profile.
+                </p>
+                <p className="mb-2 text-[11px] text-slate-200">
+                  <span className="font-semibold text-emerald-200">Uncertainty label:</span>{" "}
+                  when one approach is clearly favored (e.g., posterior-only for extensive
+                  multilevel disease), the label will be “low uncertainty.” If anterior and
+                  posterior strategies are close in predicted benefit, the label may read
+                  “moderate” or “high uncertainty,” signaling that surgeon experience,
+                  alignment goals, and patient preferences should drive the final choice.
+                </p>
+                <h3 className="mt-4 mb-1 text-[11px] font-semibold text-emerald-200">
+                  Important caveats
+                </h3>
+                <ul className="list-disc space-y-1 pl-4 text-[11px] text-slate-200">
+                  <li>
+                    The tool does not account for all factors (frailty, alignment, prior
+                    surgery, specific comorbidities).
+                  </li>
+                  <li>
+                    It should not be used as a stand-alone gatekeeper for offering or denying
+                    surgery.
+                  </li>
+                  <li>
+                    Final decisions should integrate clinical examination, full imaging
+                    review, and multidisciplinary input where appropriate.
+                  </li>
+                </ul>
               </section>
             </div>
 
-            {/* Results card – Figure 1 layout */}
+            {/* Results card */}
             <section className="rounded-2xl bg-white p-6 shadow-sm">
+              <h2 className="mb-3 text-lg font-semibold text-slate-900">
+                Model output – risk, benefit, and approach
+              </h2>
+
               {!result ? (
                 <p className="text-sm text-slate-500">
-                  Enter patient details above and click{" "}
+                  Enter patient details and click{" "}
                   <span className="font-semibold">“Run recommendation”</span> to view
                   estimates.
                 </p>
               ) : (
-                <div className="space-y-8 text-sm">
-                  {/* Section 1: Should this patient undergo surgery? */}
-                  <div>
-                    <h2 className="text-lg font-semibold text-slate-900">
-                      1. Should this patient undergo surgery?
-                    </h2>
-                    <p className="mt-1 text-sm">
-                      <span className="font-semibold">Recommendation: </span>
-                      <span className="font-semibold text-emerald-800">
-                        {result.recommendationLabel}
-                      </span>
+                <div className="space-y-4 text-sm">
+                  <div className="rounded-xl border border-emerald-100 bg-emerald-50 px-4 py-3">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">
+                      Overall recommendation
                     </p>
-                    <p className="mt-1 text-xs text-slate-600">
+                    <p className="mt-1 text-base font-semibold text-emerald-900">
+                      {result.recommendationLabel}
+                    </p>
+                    <p className="mt-1 text-xs text-emerald-800">
                       This is a guide based on modeled risk / benefit and does not replace
                       surgeon judgment or patient preference.
                     </p>
+                  </div>
 
-                    <div className="mt-4 grid gap-4 md:grid-cols-2">
-                      {/* Risk card with bar */}
-                      <div className="rounded-2xl border border-rose-100 bg-rose-50 p-4">
-                        <h3 className="text-[11px] font-semibold uppercase tracking-wide text-rose-700">
-                          Risk without surgery
-                        </h3>
-                        <p className="mt-1 text-xs text-slate-700">
-                          {result.riskText}
-                        </p>
-                        <div className="mt-3 h-3 w-full rounded-full bg-rose-100">
-                          <div
-                            className="h-3 rounded-full bg-rose-500"
-                            style={{ width: `${result.riskScore}%` }}
-                          />
-                        </div>
-                        <div className="mt-1 text-[11px] text-rose-700">
-                          Risk of neurological worsening / failure to improve:{" "}
-                          {result.riskScore.toFixed(0)}%
-                        </div>
-                      </div>
+                  <div className="grid gap-4 md:grid-cols-2">
+                    <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                      <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-600">
+                        Risk without surgery
+                      </h3>
+                      <p className="mt-1 text-2xl font-semibold text-rose-600">
+                        {result.riskScore.toFixed(0)}%
+                      </p>
+                      <p className="mt-1 text-xs text-slate-700">{result.riskText}</p>
+                    </div>
 
-                      {/* Benefit card with bar */}
-                      <div className="rounded-2xl border border-emerald-100 bg-emerald-50 p-4">
-                        <h3 className="text-[11px] font-semibold uppercase tracking-wide text-emerald-700">
-                          Expected chance of meaningful improvement with surgery
-                        </h3>
-                        <p className="mt-1 text-xs text-slate-700">
-                          {result.benefitText}
-                        </p>
-                        <div className="mt-3 h-3 w-full rounded-full bg-emerald-100">
-                          <div
-                            className="h-3 rounded-full bg-emerald-500"
-                            style={{ width: `${result.benefitScore}%` }}
-                          />
-                        </div>
-                        <div className="mt-1 text-[11px] text-emerald-700">
-                          Estimated probability of mJOA MCID or comparable functional
-                          improvement: {result.benefitScore.toFixed(0)}%
-                        </div>
-                      </div>
+                    <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                      <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-600">
+                        Expected chance of meaningful improvement with surgery
+                      </h3>
+                      <p className="mt-1 text-2xl font-semibold text-emerald-600">
+                        {result.benefitScore.toFixed(0)}%
+                      </p>
+                      <p className="mt-1 text-xs text-slate-700">{result.benefitText}</p>
                     </div>
                   </div>
 
-                  {/* Section 2: If surgery is offered, which approach? */}
-                  <div>
-                    <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
-                      <h2 className="text-lg font-semibold text-slate-900">
-                        2. If surgery is offered, which approach?
-                      </h2>
-                      <p className="text-[11px] text-slate-600">
-                        <span className="font-semibold">Uncertainty: </span>
-                        {result.uncertainty === "low" && (
-                          <>
-                            <span className="font-semibold text-emerald-700">Low</span>
-                            {" (one clear favorite; high = several similar options)."}
-                          </>
-                        )}
-                        {result.uncertainty === "moderate" && (
-                          <>
-                            <span className="font-semibold text-amber-700">Moderate</span>
-                            {" (anterior and posterior reasonably close)."}
-                          </>
-                        )}
-                        {result.uncertainty === "high" && (
-                          <>
-                            <span className="font-semibold text-rose-700">High</span>
-                            {
-                              " (predicted benefits are very similar – emphasize individualized decision-making)."
-                            }
-                          </>
-                        )}
-                      </p>
-                    </div>
+                  <p className="text-[11px] text-slate-500">
+                    <span className="font-semibold">Important caveats:</span>{" "}
+                    These risk and benefit estimates do not include all clinical factors
+                    (frailty, detailed alignment, prior surgery, specific comorbidities)
+                    and should always be interpreted together with clinical examination
+                    and full imaging review.
+                  </p>
 
-                    {/* Three big approach cards */}
-                    <div className="mt-3 grid gap-3 md:grid-cols-3">
+                  <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                    <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-600">
+                      If surgery is offered, which approach?
+                    </h3>
+
+                    <div className="mt-2 grid gap-3 md:grid-cols-3">
                       {(["anterior", "posterior", "circumferential"] as ApproachKey[]).map(
                         (key) => {
-                          const pct = formatPct(result.approachProbs[key]);
+                          const p = result.approachProbs[key];
                           const isBest = result.bestApproach === key;
-                          const title =
-                            key === "anterior"
-                              ? "Anterior"
-                              : key === "posterior"
-                              ? "Posterior"
-                              : "Circumferential";
                           return (
                             <div
                               key={key}
-                              className={`rounded-2xl border px-4 py-3 text-xs ${
+                              className={`rounded-lg border px-3 py-2 text-xs ${
                                 isBest
-                                  ? "border-emerald-400 bg-emerald-50"
+                                  ? "border-emerald-500 bg-emerald-50"
                                   : "border-slate-200 bg-white"
                               }`}
                             >
-                              <div className="flex items-baseline justify-between">
-                                <span className="text-[11px] font-semibold uppercase text-slate-700">
-                                  {title}
-                                </span>
-                                <span
-                                  className={`text-base font-semibold ${
-                                    isBest ? "text-emerald-700" : "text-slate-700"
-                                  }`}
-                                >
-                                  {pct}
-                                </span>
+                              <div className="flex items-center justify-between">
+                                <p className="font-semibold capitalize text-slate-800">
+                                  {key}
+                                </p>
+                                <p className="text-sm font-semibold text-slate-900">
+                                  {(p * 100).toFixed(0)}%
+                                </p>
                               </div>
-                              <p className="mt-1 text-[11px] text-slate-600">
-                                {isBest
-                                  ? "Highest estimated chance of clinically meaningful improvement."
-                                  : "Lower modeled probability compared with the leading approach."}
-                              </p>
+                              {isBest && (
+                                <p className="mt-1 text-[11px] font-medium text-emerald-700">
+                                  Best estimated balance of improvement and risk
+                                </p>
+                              )}
+                              {!isBest && (
+                                <p className="mt-1 text-[11px] text-slate-600">
+                                  Lower modeled probability compared with the leading
+                                  approach.
+                                </p>
+                              )}
                             </div>
                           );
                         }
                       )}
                     </div>
 
-                    {/* P(MCID) bars as separate block */}
-                    <div className="mt-4 rounded-2xl bg-slate-50 p-4 border border-slate-200">
-                      <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-600">
-                        P(MCID) by approach (approximate bands)
-                      </h3>
-                      <div className="mt-3 space-y-2 text-[11px]">
-                        {(["anterior", "posterior", "circumferential"] as ApproachKey[]).map(
-                          (key) => {
-                            const pct = formatPct(result.approachProbs[key]);
-                            const label =
-                              key === "anterior"
-                                ? "Anterior"
-                                : key === "posterior"
-                                ? "Posterior"
-                                : "Circumferential";
-                            const isBest = result.bestApproach === key;
-                            return (
-                              <div key={key} className="flex items-center gap-2">
-                                <div className="w-24 text-right text-xs text-slate-600">
-                                  {label}
-                                </div>
-                                <div className="flex-1">
-                                  <div className="h-2 w-full rounded-full bg-slate-200">
-                                    <div
-                                      className={`h-2 rounded-full ${
-                                        isBest ? "bg-emerald-500" : "bg-emerald-300"
-                                      }`}
-                                      style={{ width: pct }}
-                                    />
-                                  </div>
-                                </div>
-                                <div className="w-10 text-right">{pct}</div>
-                              </div>
-                            );
+                    <p className="mt-2 text-[11px] text-slate-600">
+                      {result.uncertainty === "low" && (
+                        <>
+                          <span className="font-semibold text-emerald-700">
+                            Uncertainty: Low
+                          </span>
+                          {" – model strongly favors the highlighted approach."}
+                        </>
+                      )}
+                      {result.uncertainty === "moderate" && (
+                        <>
+                          <span className="text-amber-700 font-semibold">
+                            Moderate uncertainty
+                          </span>
+                          {
+                            " – anterior and posterior strategies are reasonably close; surgeon experience and alignment goals are important."
                           }
-                        )}
-                      </div>
-                      <p className="mt-3 text-[11px] text-slate-600">
-                        Patterns are derived from guideline-informed logic and synthetic
-                        outcome data and are intended to support, not replace, surgeon
-                        judgment.
-                      </p>
-                    </div>
-
-                    <p className="mt-3 rounded-xl bg-slate-100 px-4 py-3 text-[11px] text-slate-700">
-                      <span className="font-semibold">Hybrid guideline + ML engine.</span>{" "}
-                      This prototype blends AO Spine / WFNS guideline concepts (myelopathy
-                      severity, cord signal, canal compromise, OPLL, gait) with patterns
-                      learned from large synthetic DCM outcome cohorts. It is intended to
-                      structure discussions and document reasoning, not to mandate
-                      treatment.
+                        </>
+                      )}
+                      {result.uncertainty === "high" && (
+                        <>
+                          <span className="text-rose-700 font-semibold">
+                            High uncertainty
+                          </span>
+                          {
+                            " – predicted benefits are very similar across approaches, emphasizing the need for individualized discussion."
+                          }
+                        </>
+                      )}
                     </p>
                   </div>
                 </div>
@@ -1353,39 +1344,22 @@ export default function PrototypePage() {
             </section>
           </>
         ) : (
-          // --------- Batch tab ----------
-          <section className="rounded-2xl bg-white p-6 text-sm shadow-sm">
-            <h2 className="mb-3 text-xl font-semibold text-slate-900">Batch (CSV)</h2>
-            <p className="mb-3 text-slate-700">
+          // ---------- Batch tab ----------
+          <section className="rounded-2xl bg-white p-6 shadow-sm">
+            <h2 className="mb-2 text-lg font-semibold text-slate-900">Batch (CSV)</h2>
+            <p className="mb-3 text-sm text-slate-600">
               Upload a CSV file or paste data with one row per patient using this header
               (order can match your export):
             </p>
-            {/* Wrapped header line */}
-            <p className="mb-3 rounded-lg bg-slate-50 px-3 py-2 text-[11px] font-mono text-slate-700 whitespace-normal break-words">
-              age,sex,smoker,symptom_duration_months,severity,baseline_mJOA,levels_operated,canal_occupying_ratio_cat,T2_signal,OPLL,T1_hypointensity,gait_impairment,psych_disorder,baseline_NDI,baseline_SF36_PCS,baseline_SF36_MCS
-            </p>
-
-            {/* File upload */}
-            <div className="mb-3 flex flex-wrap items-center gap-3 text-xs">
-              <label className="text-slate-700 font-semibold">
-                Upload CSV file:
-                <input
-                  type="file"
-                  accept=".csv,text/csv"
-                  onChange={handleBatchFileChange}
-                  className="ml-3 text-xs"
-                />
-              </label>
-              <span className="text-slate-500">
-                Uploaded content will appear in the box below so you can review or edit
-                if needed.
-              </span>
-            </div>
+            <pre className="mb-3 overflow-x-auto rounded-lg bg-slate-900 px-3 py-2 text-[11px] text-emerald-100">
+              age,sex,smoker,symptom_duration_months,severity,baseline_mJOA,levels_operated,
+              canal_occupying_ratio_cat,T2_signal,OPLL,T1_hypointensity,gait_impa
+              irment,psych_disorder,baseline_NDI,baseline_SF36_PCS,baseline_SF36_MCS
+            </pre>
 
             <textarea
-              rows={10}
-              className="w-full rounded-lg border border-slate-200 px-3 py-2 font-mono text-xs text-slate-800"
-              placeholder={`age,sex,smoker,symptom_duration_months,severity,baseline_mJOA,levels_operated,canal_occupying_ratio_cat,T2_signal,OPLL,T1_hypointensity,gait_impairment,psych_disorder,baseline_NDI,baseline_SF36_PCS,baseline_SF36_MCS
+              className="h-48 w-full rounded-lg border border-slate-200 px-3 py-2 font-mono text-xs text-slate-800"
+              placeholder={`age,sex,smoker,symptom_duration_mont...,psych_disorder,baseline_NDI,baseline_SF36_PCS,baseline_SF36_MCS
 65,M,0,12,moderate,13,3,50–60%,multilevel,0,0,1,0,40,40,45`}
               value={batchCsv}
               onChange={(e) => setBatchCsv(e.target.value)}
@@ -1396,107 +1370,101 @@ export default function PrototypePage() {
                 type="button"
                 onClick={handleRunBatch}
                 disabled={batchLoading}
-                className="rounded-lg bg-emerald-600 px-4 py-2 text-xs font-semibold text-white hover:bg-emerald-700 disabled:opacity-60"
+                className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-700 disabled:opacity-60"
               >
-                {batchLoading ? "Running batch..." : "Run batch recommendations"}
+                {batchLoading ? "Running..." : "Run batch recommendations"}
               </button>
               <button
                 type="button"
-                onClick={() => {
-                  setBatchCsv("");
-                  setBatchResults(null);
-                  setBatchError(null);
-                }}
-                className="rounded-lg border border-slate-300 px-4 py-2 text-xs text-slate-700 hover:bg-slate-50"
+                onClick={handlePrintBatchSummary}
+                disabled={!batchResults || batchResults.length === 0}
+                className="rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-700 hover:bg-slate-50 disabled:opacity-60"
               >
-                Clear
+                Save batch summary (PDF)
               </button>
               <button
                 type="button"
-                onClick={handleExportBatchPdf}
-                className="rounded-lg border border-emerald-500 px-4 py-2 text-xs text-emerald-700 hover:bg-emerald-50"
+                onClick={handlePrintBatchView}
+                disabled={!batchResults || batchResults.length === 0}
+                className="rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-700 hover:bg-slate-50 disabled:opacity-60"
               >
-                Save batch summary PDF
+                Print batch view
               </button>
             </div>
 
             {batchError && (
-              <p className="mt-3 rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-700">
+              <p className="mt-3 text-sm text-rose-600">
+                <span className="font-semibold">Batch error: </span>
                 {batchError}
               </p>
             )}
 
-            {batchResults && (
-              <div className="mt-5">
-                <h3 className="mb-2 text-sm font-semibold text-slate-900">
-                  Batch results ({batchResults.length} patients)
-                </h3>
-                <div className="overflow-x-auto rounded-lg border border-slate-200">
-                  <table className="min-w-full border-collapse text-[11px]">
-                    <thead className="bg-slate-100">
-                      <tr>
-                        <th className="border-b border-slate-200 px-2 py-1 text-left font-semibold">
-                          #
-                        </th>
-                        <th className="border-b border-slate-200 px-2 py-1 text-left font-semibold">
-                          Age
-                        </th>
-                        <th className="border-b border-slate-200 px-2 py-1 text-left font-semibold">
-                          mJOA
-                        </th>
-                        <th className="border-b border-slate-200 px-2 py-1 text-left font-semibold">
-                          Severity
-                        </th>
-                        <th className="border-b border-slate-200 px-2 py-1 text-left font-semibold">
-                          Risk w/o surgery
-                        </th>
-                        <th className="border-b border-slate-200 px-2 py-1 text-left font-semibold">
-                          Benefit with surgery
-                        </th>
-                        <th className="border-b border-slate-200 px-2 py-1 text-left font-semibold">
-                          Recommendation
-                        </th>
-                        <th className="border-b border-slate-200 px-2 py-1 text-left font-semibold">
-                          Best approach
-                        </th>
+            {batchResults && batchResults.length > 0 && (
+              <div className="mt-6 overflow-x-auto rounded-lg border border-slate-200">
+                <table className="min-w-full divide-y divide-slate-200 text-xs">
+                  <thead className="bg-slate-50">
+                    <tr>
+                      <th className="px-2 py-1 text-left font-semibold text-slate-700">
+                        Row
+                      </th>
+                      <th className="px-2 py-1 text-left font-semibold text-slate-700">
+                        Age
+                      </th>
+                      <th className="px-2 py-1 text-left font-semibold text-slate-700">
+                        mJOA
+                      </th>
+                      <th className="px-2 py-1 text-left font-semibold text-slate-700">
+                        Severity
+                      </th>
+                      <th className="px-2 py-1 text-left font-semibold text-slate-700">
+                        Risk w/o surgery
+                      </th>
+                      <th className="px-2 py-1 text-left font-semibold text-slate-700">
+                        Benefit w/ surgery
+                      </th>
+                      <th className="px-2 py-1 text-left font-semibold text-slate-700">
+                        Recommendation
+                      </th>
+                      <th className="px-2 py-1 text-left font-semibold text-slate-700">
+                        Best approach
+                      </th>
+                      <th className="px-2 py-1 text-left font-semibold text-slate-700">
+                        Error
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 bg-white">
+                    {batchResults.map((row) => (
+                      <tr key={row.index}>
+                        <td className="px-2 py-1 text-slate-800">{row.index}</td>
+                        <td className="px-2 py-1 text-slate-800">
+                          {row.age != null ? row.age : "-"}
+                        </td>
+                        <td className="px-2 py-1 text-slate-800">
+                          {row.baselineMJOA != null ? row.baselineMJOA : "-"}
+                        </td>
+                        <td className="px-2 py-1 capitalize text-slate-800">
+                          {row.severity || "-"}
+                        </td>
+                        <td className="px-2 py-1 text-slate-800">
+                          {row.riskScore != null ? `${row.riskScore.toFixed(0)}%` : "-"}
+                        </td>
+                        <td className="px-2 py-1 text-slate-800">
+                          {row.benefitScore != null ? `${row.benefitScore.toFixed(0)}%` : "-"}
+                        </td>
+                        <td className="px-2 py-1 text-slate-800">
+                          {row.recommendationLabel}
+                        </td>
+                        <td className="px-2 py-1 capitalize text-slate-800">
+                          {row.bestApproach || "-"}
+                        </td>
+                        <td className="px-2 py-1 text-rose-600">
+                          {row.error ? row.error : ""}
+                        </td>
                       </tr>
-                    </thead>
-                    <tbody>
-                      {batchResults.map((row, idx) => {
-                        const m = Number(row.input.baselineMJOA);
-                        const sevLabel = Number.isNaN(m) ? "-" : deriveSeverity(m);
-                        return (
-                          <tr key={idx} className="odd:bg-white even:bg-slate-50">
-                            <td className="border-b border-slate-100 px-2 py-1">
-                              {idx + 1}
-                            </td>
-                            <td className="border-b border-slate-100 px-2 py-1">
-                              {row.input.age || "-"}
-                            </td>
-                            <td className="border-b border-slate-100 px-2 py-1">
-                              {row.input.baselineMJOA || "-"}
-                            </td>
-                            <td className="border-b border-slate-100 px-2 py-1 capitalize">
-                              {sevLabel}
-                            </td>
-                            <td className="border-b border-slate-100 px-2 py-1">
-                              {row.result.riskScore.toFixed(0)}%
-                            </td>
-                            <td className="border-b border-slate-100 px-2 py-1">
-                              {row.result.benefitScore.toFixed(0)}%
-                            </td>
-                            <td className="border-b border-slate-100 px-2 py-1">
-                              {row.result.recommendationLabel}
-                            </td>
-                            <td className="border-b border-slate-100 px-2 py-1 capitalize">
-                              {row.result.bestApproach}
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
+                    ))}
+                  </tbody>
+                </table>
               </div>
             )}
           </section>
