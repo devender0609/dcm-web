@@ -911,9 +911,11 @@ export default function PrototypePage() {
                       className="w-full rounded-lg border border-slate-200 px-3 py-1.5 text-sm"
                     />
                     {autoSeverity && (
-                      <p className="mt-1 text-[11px] text-slate-500">
+                      <p className="mt-1 text-[11px] font-semibold text-slate-700">
                         mJOA-based severity (auto):{" "}
-                        <span className="font-semibold capitalize">{autoSeverity}</span>
+                        <span className="capitalize text-emerald-700">
+                          {autoSeverity}
+                        </span>
                       </p>
                     )}
                   </div>
@@ -1121,7 +1123,7 @@ export default function PrototypePage() {
                 )}
               </section>
 
-              {/* Right: explanation column – Figure 1 style (two white cards) */}
+              {/* Right: explanation column – Figure 1 style (two white cards + caveats) */}
               <section className="space-y-4">
                 <div className="rounded-2xl bg-white p-5 shadow-sm">
                   <h3 className="mb-2 text-base font-semibold text-emerald-700">
@@ -1147,6 +1149,26 @@ export default function PrototypePage() {
                     several similar options, where surgeon preferences, alignment, and
                     comorbidities may drive the final choice.
                   </p>
+                </div>
+
+                <div className="rounded-2xl bg-white p-5 shadow-sm">
+                  <h3 className="mb-2 text-base font-semibold text-slate-900">
+                    Important caveats
+                  </h3>
+                  <ul className="list-disc space-y-1 pl-5 text-sm text-slate-700">
+                    <li>
+                      The tool does not account for all factors (frailty, alignment, prior
+                      surgery, specific comorbidities).
+                    </li>
+                    <li>
+                      It should not be used as a stand-alone gatekeeper for offering or
+                      denying surgery.
+                    </li>
+                    <li>
+                      Final decisions should integrate clinical examination, full imaging
+                      review, and multidisciplinary input where appropriate.
+                    </li>
+                  </ul>
                 </div>
               </section>
             </div>
